@@ -16,7 +16,17 @@ else:
         tomllib = None  # type: ignore[assignment]
 
 
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "vocal"
+def _default_config_dir() -> Path:
+    """Return the platform-appropriate configuration directory."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "vocal"
+    elif sys.platform == "win32":
+        return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "vocal"
+    else:
+        return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "vocal"
+
+
+CONFIG_DIR = _default_config_dir()
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 
 
@@ -38,7 +48,7 @@ class AudioConfig:
 
 @dataclass
 class HotkeyConfig:
-    backend: str = "evdev"
+    backend: str = "auto"
     key: str = "PAUSE"
     mode: str = "toggle"
 
