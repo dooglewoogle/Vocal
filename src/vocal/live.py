@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import threading
 from collections import deque
 
 import numpy as np
@@ -12,6 +13,7 @@ import sounddevice as sd
 from vocal.audio import resolve_device
 from vocal.base_engine import BaseDictationEngine
 from vocal.config import VocalConfig
+from vocal.hotkey import create_listener
 from vocal.vad import WINDOW_SAMPLES, SpeechDetector, StreamingVAD
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,35 @@ class LiveDictationEngine(BaseDictationEngine):
         # Audio stream (created in run())
         self._stream: sd.InputStream | None = None
 
+        # Pause support via hotkey
+        # Semantics are inverted vs the main engine: the hotkey's "start
+        # recording" action pauses live listening, and "stop recording"
+        # resumes it.  In PTT mode this means hold-to-mute.
+        self._paused = threading.Event()  # set = paused
+        self._listener = create_listener(
+            config.hotkey,
+            on_start=self._on_pause,
+            on_stop=self._on_unpause,
+        )
+
+    # ── Pause/unpause callbacks ────────────────────────────────────
+
+    def _on_pause(self) -> None:
+        """Called by hotkey listener to pause live listening."""
+        self._paused.set()
+        # Flush any in-progress utterance so partial audio isn't left dangling
+        if self._in_speech:
+            self._flush_utterance()
+        print("\u23f8  Paused", flush=True)
+
+    def _on_unpause(self) -> None:
+        """Called by hotkey listener to resume live listening."""
+        self._vad.reset()
+        self._detector.reset()
+        self._preroll.clear()
+        self._paused.clear()
+        print("\u25b6  Listening...", flush=True)
+
     # ── Audio callback ──────────────────────────────────────────────
 
     def _audio_callback(
@@ -55,6 +86,8 @@ class LiveDictationEngine(BaseDictationEngine):
         """Sounddevice callback — RT thread. Must be fast."""
         if status:
             logger.warning("Audio status: %s", status)
+        if self._paused.is_set():
+            return
         chunk = indata[:, 0].copy()
         try:
             self._raw_queue.put_nowait(chunk)
@@ -128,6 +161,7 @@ class LiveDictationEngine(BaseDictationEngine):
         return [self._raw_queue] + super()._sentinel_queues()
 
     def _cleanup_resources(self) -> None:
+        self._listener.stop()
         if self._stream:
             self._stream.stop()
             self._stream.close()
@@ -152,9 +186,17 @@ class LiveDictationEngine(BaseDictationEngine):
         self._start_workers((self._vad_worker, "vad"))
         self._install_signal_handlers()
 
+        key = self._config.hotkey.key
+        mode = self._config.hotkey.mode
         print(
-            "\nVocal live mode \u2014 listening for speech. Press Ctrl+C to stop.\n",
+            f"\nVocal live mode \u2014 listening for speech. "
+            f"Press {key} ({mode}) to pause/resume. Ctrl+C to stop.\n",
             flush=True,
         )
 
-        self._shutdown.wait()
+        try:
+            self._listener.run()
+        except Exception:
+            logger.exception("Hotkey listener crashed")
+        finally:
+            self.shutdown()
