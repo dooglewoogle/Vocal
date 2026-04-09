@@ -1,9 +1,10 @@
-"""Text injection into the active window via clipboard or xdotool."""
+"""Text injection into the active window — cross-platform."""
 
 from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 import time
 
 from vocal.config import OutputConfig
@@ -23,8 +24,11 @@ def _run(cmd: list[str], timeout: float = 5.0, **kwargs) -> subprocess.Completed
         raise
 
 
-def inject_clipboard(text: str) -> None:
-    """Inject text by copying to clipboard and pasting with Ctrl+V."""
+# ── Linux (xclip + xdotool) ────────────────────────────────────────
+
+
+def _inject_clipboard_linux(text: str) -> None:
+    """Inject text by copying to clipboard and pasting with Ctrl+V (Linux/X11)."""
     # 1. Save current clipboard
     old_clipboard = None
     try:
@@ -59,24 +63,109 @@ def inject_clipboard(text: str) -> None:
             logger.warning("xclip restore failed (rc=%d)", proc.returncode)
 
 
-def inject_xdotool(text: str, delay_ms: int = 8) -> None:
-    """Inject text by simulating keystrokes with xdotool."""
+def _inject_xdotool_linux(text: str, delay_ms: int = 8) -> None:
+    """Inject text by simulating keystrokes with xdotool (Linux/X11)."""
     _run(
         ["xdotool", "type", "--clearmodifiers", "--delay", str(delay_ms), "--", text],
         timeout=30.0,
     )
 
 
+# ── macOS (pbcopy/pbpaste + osascript) ─────────────────────────────
+
+
+def _inject_clipboard_macos(text: str) -> None:
+    """Inject text by copying to clipboard and pasting with Cmd+V (macOS)."""
+    # 1. Save current clipboard
+    old_clipboard = None
+    try:
+        result = _run(["pbpaste"], timeout=1.0)
+        if result.returncode == 0:
+            old_clipboard = result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # 2. Set clipboard to our text
+    proc = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+    proc.communicate(text.encode("utf-8"))
+    if proc.returncode != 0:
+        logger.warning("pbcopy failed (rc=%d)", proc.returncode)
+        return
+
+    # 3. Paste via Cmd+V
+    _run(
+        [
+            "osascript", "-e",
+            'tell application "System Events" to keystroke "v" using command down',
+        ],
+        timeout=2.0,
+    )
+
+    # 4. Restore clipboard after a short delay
+    if old_clipboard is not None:
+        time.sleep(0.1)
+        proc = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+        proc.communicate(old_clipboard)
+        if proc.returncode != 0:
+            logger.warning("pbcopy restore failed (rc=%d)", proc.returncode)
+
+
+def _inject_xdotool_macos(text: str, delay_ms: int = 8) -> None:
+    """Inject text by simulating keystrokes via osascript (macOS)."""
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    _run(
+        [
+            "osascript", "-e",
+            f'tell application "System Events" to keystroke "{escaped}"',
+        ],
+        timeout=30.0,
+    )
+
+
+# ── Windows (stubs) ────────────────────────────────────────────────
+
+
+def _inject_clipboard_windows(text: str) -> None:
+    raise NotImplementedError(
+        "Windows text injection is not yet implemented. "
+        "Contributions welcome — needs pyperclip + pyautogui or win32 APIs."
+    )
+
+
+def _inject_xdotool_windows(text: str, delay_ms: int = 8) -> None:
+    raise NotImplementedError(
+        "Windows keystroke injection is not yet implemented."
+    )
+
+
+# ── Dispatcher ──────────────────────────────────────────────────────
+
+
+_CLIPBOARD_DISPATCH = {
+    "linux": _inject_clipboard_linux,
+    "darwin": _inject_clipboard_macos,
+    "win32": _inject_clipboard_windows,
+}
+
+_XDOTOOL_DISPATCH = {
+    "linux": _inject_xdotool_linux,
+    "darwin": _inject_xdotool_macos,
+    "win32": _inject_xdotool_windows,
+}
+
+
 def inject_text(text: str, config: OutputConfig) -> None:
-    """Inject text using the configured method."""
+    """Inject text using the configured method, dispatching per platform."""
     if not text:
         return
 
-    logger.debug("Injecting %d chars via %s", len(text), config.method)
+    logger.debug("Injecting %d chars via %s on %s", len(text), config.method, sys.platform)
 
     if config.method == "clipboard":
-        inject_clipboard(text)
+        fn = _CLIPBOARD_DISPATCH.get(sys.platform, _inject_clipboard_linux)
+        fn(text)
     elif config.method == "xdotool":
-        inject_xdotool(text, delay_ms=config.xdotool_delay)
+        fn_xdo = _XDOTOOL_DISPATCH.get(sys.platform, _inject_xdotool_linux)
+        fn_xdo(text, delay_ms=config.xdotool_delay)
     else:
         logger.error("Unknown output method: %s", config.method)
