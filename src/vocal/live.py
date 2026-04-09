@@ -14,6 +14,7 @@ from vocal.audio import resolve_device
 from vocal.base_engine import BaseDictationEngine
 from vocal.config import VocalConfig
 from vocal.hotkey import create_listener
+from vocal.phrasebook import Phrasebook
 from vocal.vad import WINDOW_SAMPLES, SpeechDetector, StreamingVAD
 
 logger = logging.getLogger(__name__)
@@ -22,8 +23,14 @@ logger = logging.getLogger(__name__)
 class LiveDictationEngine(BaseDictationEngine):
     """Always-on dictation engine using streaming VAD to detect speech boundaries."""
 
-    def __init__(self, config: VocalConfig) -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: VocalConfig,
+        phrasebook: Phrasebook | None = None,
+        phrasebook_seed: bool = False,
+        phrasebook_replace: bool = False,
+    ) -> None:
+        super().__init__(config, phrasebook, phrasebook_seed, phrasebook_replace)
 
         # VAD
         self._vad = StreamingVAD()

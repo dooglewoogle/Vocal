@@ -10,6 +10,7 @@ from vocal.audio import AudioBuffer, AudioCapture
 from vocal.base_engine import BaseDictationEngine
 from vocal.config import VocalConfig
 from vocal.hotkey import create_listener
+from vocal.phrasebook import Phrasebook
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +24,14 @@ class State(enum.Enum):
 class DictationEngine(BaseDictationEngine):
     """Hotkey-driven dictation: press to record, release to transcribe."""
 
-    def __init__(self, config: VocalConfig) -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: VocalConfig,
+        phrasebook: Phrasebook | None = None,
+        phrasebook_seed: bool = False,
+        phrasebook_replace: bool = False,
+    ) -> None:
+        super().__init__(config, phrasebook, phrasebook_seed, phrasebook_replace)
         self._state = State.IDLE
         self._state_lock = threading.Lock()
 

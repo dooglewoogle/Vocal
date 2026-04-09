@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from vocal.config import PostprocessConfig
+from vocal.phrasebook import Phrasebook
 
 HALLUCINATION_PATTERNS = [
     re.compile(r"^\s*\[.*\]\s*$"),
@@ -19,12 +20,15 @@ FILLER_WORDS = {"um", "uh", "hmm", "mm", "mhm", "uh-huh", "like"}
 _PUNCT_CHARS = frozenset(".,!?;:'\"")
 
 
-def postprocess(text: str, config: PostprocessConfig) -> str:
+def postprocess(text: str, config: PostprocessConfig, phrasebook: Phrasebook | None = None) -> str:
     """Clean up Whisper output for dictation."""
     if not text or not text.strip():
         return ""
 
     text = text.strip()
+
+    if phrasebook:
+        text = phrasebook.apply_replacements(text)
 
     if config.remove_hallucinations:
         for pattern in HALLUCINATION_PATTERNS:

@@ -8,6 +8,7 @@ import time
 import numpy as np
 
 from vocal.config import ModelConfig, VADConfig
+from vocal.phrasebook import Phrasebook
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,18 @@ VALID_MODELS = frozenset({
 class Transcriber:
     """Wraps faster_whisper.WhisperModel for single-call transcription."""
 
-    def __init__(self, model_config: ModelConfig, vad_config: VADConfig, sample_rate: int = 16000) -> None:
+    def __init__(
+        self,
+        model_config: ModelConfig,
+        vad_config: VADConfig,
+        sample_rate: int = 16000,
+        phrasebook: Phrasebook | None = None,
+    ) -> None:
         self._model_config = model_config
         self._vad_config = vad_config
         self._sample_rate = sample_rate
         self._model = None
+        self._initial_prompt = phrasebook.build_initial_prompt() if phrasebook else None
 
     def load(self) -> None:
         """Load the Whisper model. Call once at startup."""
@@ -58,6 +66,8 @@ class Transcriber:
         )
         elapsed = time.monotonic() - t0
         logger.info("Model loaded in %.1fs", elapsed)
+        if self._initial_prompt:
+            logger.info("Initial prompt: %s", self._initial_prompt)
 
     def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe a float32 audio array (16 kHz mono). Returns text."""
@@ -89,6 +99,7 @@ class Transcriber:
             beam_size=self._model_config.beam_size,
             vad_filter=self._vad_config.enabled,
             vad_parameters=vad_params or None,
+            initial_prompt=self._initial_prompt,
         )
 
         # Must fully consume the lazy generator

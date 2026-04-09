@@ -63,6 +63,16 @@ def parse_args() -> argparse.Namespace:
         help="Min silence duration in ms before ending an utterance (live mode, default: 600)",
     )
     parser.add_argument(
+        "--phrasebook", action="store_true",
+        help="Seed Whisper with phrasebook terms to bias decoding toward known vocabulary "
+             "(reads from ~/.config/vocal/phrasebook.toml)",
+    )
+    parser.add_argument(
+        "--phrasebook-replace", action="store_true",
+        help="Apply phrasebook replacement rules to fix common mishearings after transcription "
+             "(reads from ~/.config/vocal/phrasebook.toml)",
+    )
+    parser.add_argument(
         "--benchmark", action="store_true",
         help="Benchmark all Whisper model sizes on this hardware and exit",
     )
@@ -141,12 +151,22 @@ def main() -> None:
         print("Install with: sudo apt install " + " ".join(missing), file=sys.stderr)
         sys.exit(1)
 
+    # Load phrasebook if either flag is set
+    phrasebook = None
+    if args.phrasebook or args.phrasebook_replace:
+        from vocal.phrasebook import load_phrasebook
+        phrasebook = load_phrasebook()
+
     # Run the engine
     if args.live:
         from vocal.live import LiveDictationEngine
-        engine = LiveDictationEngine(config)
+        engine = LiveDictationEngine(
+            config, phrasebook, args.phrasebook, args.phrasebook_replace,
+        )
     else:
         from vocal.engine import DictationEngine
-        engine = DictationEngine(config)
+        engine = DictationEngine(
+            config, phrasebook, args.phrasebook, args.phrasebook_replace,
+        )
 
     engine.run()

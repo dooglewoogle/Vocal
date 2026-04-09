@@ -13,6 +13,7 @@ import numpy as np
 
 from vocal.config import VocalConfig
 from vocal.output import inject_text
+from vocal.phrasebook import Phrasebook
 from vocal.postprocess import postprocess
 from vocal.transcriber import Transcriber
 
@@ -22,12 +23,21 @@ logger = logging.getLogger(__name__)
 class BaseDictationEngine(ABC):
     """Base class providing shared transcription pipeline, shutdown, and signal handling."""
 
-    def __init__(self, config: VocalConfig) -> None:
+    def __init__(
+        self,
+        config: VocalConfig,
+        phrasebook: Phrasebook | None = None,
+        phrasebook_seed: bool = False,
+        phrasebook_replace: bool = False,
+    ) -> None:
         self._config = config
         self._shutdown = threading.Event()
+        self._phrasebook = phrasebook if phrasebook_replace else None
 
         self._transcriber = Transcriber(
-            config.model, config.vad, sample_rate=config.audio.sample_rate,
+            config.model, config.vad,
+            sample_rate=config.audio.sample_rate,
+            phrasebook=phrasebook if phrasebook_seed else None,
         )
         self._transcription_queue: queue.Queue[np.ndarray | None] = queue.Queue()
         self._output_queue: queue.Queue[str | None] = queue.Queue()
@@ -48,7 +58,7 @@ class BaseDictationEngine(ABC):
                 break
 
             text = self._transcriber.transcribe(audio)
-            text = postprocess(text, self._config.postprocess)
+            text = postprocess(text, self._config.postprocess, self._phrasebook)
 
             if text:
                 self._output_queue.put(text)
