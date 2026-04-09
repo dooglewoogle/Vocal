@@ -111,7 +111,8 @@ class BaseDictationEngine(ABC):
             self.shutdown()
 
         signal.signal(signal.SIGINT, handle_signal)
-        signal.signal(signal.SIGTERM, handle_signal)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, handle_signal)
 
     # ── Shutdown ────────────────────────────────────────────────────
 

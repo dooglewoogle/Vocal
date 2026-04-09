@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
         help="Text injection method",
     )
     parser.add_argument(
-        "--hotkey-backend", type=str, choices=["evdev", "pynput"], default=None,
+        "--hotkey-backend", type=str, choices=["auto", "evdev", "pynput"], default=None,
         help="Hotkey listener backend",
     )
     parser.add_argument(
@@ -148,7 +148,10 @@ def main() -> None:
     missing = check_dependencies(config.output.method)
     if missing:
         print(f"Missing system dependencies: {', '.join(missing)}", file=sys.stderr)
-        print("Install with: sudo apt install " + " ".join(missing), file=sys.stderr)
+        if sys.platform == "linux":
+            print("Install with: sudo apt install " + " ".join(missing), file=sys.stderr)
+        elif sys.platform == "darwin":
+            print("These should be built into macOS. Check your PATH.", file=sys.stderr)
         sys.exit(1)
 
     # Load phrasebook if either flag is set
