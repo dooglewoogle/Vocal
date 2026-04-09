@@ -1,9 +1,10 @@
-"""Global hotkey listener via evdev (primary) or pynput (fallback)."""
+"""Global hotkey listener via evdev (Linux) or pynput (cross-platform)."""
 
 from __future__ import annotations
 
 import logging
 import select
+import sys
 from typing import Callable
 
 from vocal.config import HotkeyConfig
@@ -136,7 +137,7 @@ class EvdevHotkeyListener:
 
 
 class PynputHotkeyListener:
-    """Fallback hotkey listener using pynput (X11 only, no special permissions)."""
+    """Cross-platform hotkey listener using pynput (Linux/X11, macOS/Cocoa, Windows/Win32)."""
 
     def __init__(
         self,
@@ -168,6 +169,12 @@ class PynputHotkeyListener:
     def run(self) -> None:
         """Block and listen for hotkey events."""
         from pynput.keyboard import Listener
+
+        if sys.platform == "darwin":
+            logger.info(
+                "macOS: pynput requires Accessibility permissions. "
+                "Grant access in System Settings → Privacy & Security → Accessibility."
+            )
 
         target_key = self._resolve_key()
         mode = self._config.mode
@@ -201,15 +208,33 @@ class PynputHotkeyListener:
             self._listener.stop()
 
 
+def _auto_detect_backend() -> str:
+    """Pick the best hotkey backend for the current platform."""
+    if sys.platform == "linux":
+        try:
+            import evdev  # noqa: F401
+            return "evdev"
+        except ImportError:
+            logger.info("evdev not available, falling back to pynput")
+            return "pynput"
+    # macOS, Windows — pynput is the cross-platform option
+    return "pynput"
+
+
 def create_listener(
     config: HotkeyConfig,
     on_start: Callable[[], None],
     on_stop: Callable[[], None],
 ) -> EvdevHotkeyListener | PynputHotkeyListener:
     """Create the appropriate hotkey listener based on config."""
-    if config.backend == "evdev":
+    backend = config.backend
+    if backend == "auto":
+        backend = _auto_detect_backend()
+        logger.info("Auto-detected hotkey backend: %s", backend)
+
+    if backend == "evdev":
         return EvdevHotkeyListener(config, on_start, on_stop)
-    elif config.backend == "pynput":
+    elif backend == "pynput":
         return PynputHotkeyListener(config, on_start, on_stop)
     else:
         raise ValueError(f"Unknown hotkey backend: {config.backend!r}")
