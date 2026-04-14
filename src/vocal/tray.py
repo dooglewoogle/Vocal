@@ -41,6 +41,14 @@ _STATE_LABEL: dict[DictationState, str] = {
     DictationState.TRANSCRIBING: "Transcribing...",
 }
 
+# Models shown in the tray submenu, ordered by size.
+_TRAY_MODELS: list[str] = [
+    "tiny.en", "base.en", "small.en", "medium.en",
+    "tiny", "base", "small", "medium",
+    "large-v3",
+    "distil-small.en", "distil-medium.en", "distil-large-v3",
+]
+
 
 def _load_image(filename: str) -> "PILImage":
     """Load a packaged PNG asset. Raises FileNotFoundError with a clear message."""
@@ -49,6 +57,22 @@ def _load_image(filename: str) -> "PILImage":
     asset = files("vocal").joinpath("assets", filename)
     with asset.open("rb") as f:
         return Image.open(f).copy()  # copy() detaches from the file handle
+
+
+def _get_input_devices() -> list[tuple[int, str, bool]]:
+    """Return [(index, name, is_system_default)] for all input-capable devices."""
+    try:
+        import sounddevice as sd
+
+        default_input = sd.default.device[0]
+        return [
+            (i, dev["name"], i == default_input)
+            for i, dev in enumerate(sd.query_devices())
+            if dev["max_input_channels"] > 0
+        ]
+    except Exception:
+        logger.exception("Failed to query audio devices")
+        return []
 
 
 class TrayIcon:
@@ -64,12 +88,27 @@ class TrayIcon:
         *,
         on_toggle_pause: Callable[[], None],
         on_quit: Callable[[], None],
+        on_select_device: Callable[[int | None], None],
+        on_select_model: Callable[[str], None],
+        on_switch_mode: Callable[[str], None],
+        on_open_phrasebook: Callable[[], None],
+        current_model: str = "small.en",
+        current_mode: str = "live",
+        current_device: int | None = None,
     ) -> None:
         self._on_toggle_pause = on_toggle_pause
         self._on_quit = on_quit
+        self._on_select_device = on_select_device
+        self._on_select_model = on_select_model
+        self._on_switch_mode = on_switch_mode
+        self._on_open_phrasebook = on_open_phrasebook
 
         self._state: DictationState = DictationState.LISTENING
         self._state_lock = threading.Lock()
+
+        self._current_device: int | None = current_device
+        self._current_model: str = current_model
+        self._current_mode: str = current_mode
 
         self._images: dict[DictationState, object] = {}
         self._icon: "pystray.Icon | None" = None
@@ -94,6 +133,11 @@ class TrayIcon:
             icon.update_menu()
         except Exception:
             logger.exception("Failed to update tray for state %s", state.value)
+
+    def set_mode(self, mode: str) -> None:
+        """Update the displayed current mode (called after engine swap)."""
+        self._current_mode = mode
+        self._update_menu()
 
     def run(self) -> None:
         """Block on the tray event loop. Must be called from the main thread."""
@@ -142,7 +186,7 @@ class TrayIcon:
         except Exception:
             logger.exception("Error stopping tray icon")
 
-    # ── Internal ────────────────────────────────────────────────────
+    # ── Internal helpers ────────────────────────────────────────────
 
     def _image_for(self, state: DictationState) -> object:
         return self._images.get(state) or self._images.get(DictationState.LISTENING)
@@ -151,12 +195,61 @@ class TrayIcon:
         with self._state_lock:
             return self._state
 
+    def _update_menu(self) -> None:
+        """Re-evaluate dynamic menu state (radio buttons, labels)."""
+        icon = self._icon
+        if icon is not None:
+            icon.update_menu()
+
+    def _rebuild_menu(self) -> None:
+        """Rebuild the entire menu (e.g. when the device list may have changed)."""
+        icon = self._icon
+        if icon is not None:
+            icon.menu = self._build_menu()
+            icon.update_menu()
+
+    # ── Selection handlers (tray click → update state → fire callback) ──
+
+    def _select_device(self, device_index: int | None) -> None:
+        if self._current_device == device_index:
+            return
+        self._current_device = device_index
+        try:
+            self._on_select_device(device_index)
+        except Exception:
+            logger.exception("device selection callback raised")
+        self._rebuild_menu()  # device list may have changed
+
+    def _select_model(self, model_name: str) -> None:
+        if self._current_model == model_name:
+            return
+        self._current_model = model_name
+        try:
+            self._on_select_model(model_name)
+        except Exception:
+            logger.exception("model selection callback raised")
+        self._update_menu()
+
+    def _select_mode(self, mode: str) -> None:
+        if self._current_mode == mode:
+            return
+        self._current_mode = mode
+        try:
+            self._on_switch_mode(mode)
+        except Exception:
+            logger.exception("mode switch callback raised")
+        self._update_menu()
+
+    # ── Menu construction ───────────────────────────────────────────
+
     def _build_menu(self) -> "pystray.Menu":
         import pystray
 
+        # ── Status (read-only) ──────────────────────────────────────
         def status_text(_item: object) -> str:
             return f"Status: {_STATE_LABEL[self._current_state()]}"
 
+        # ── Pause / Resume ──────────────────────────────────────────
         def pause_text(_item: object) -> str:
             return "Resume" if self._current_state() == DictationState.SLEEPING else "Pause"
 
@@ -166,6 +259,84 @@ class TrayIcon:
             except Exception:
                 logger.exception("pause callback raised")
 
+        # ── Audio Device submenu ────────────────────────────────────
+        def _dev_action(i: int | None) -> Callable:
+            def _cb(_icon: object, _item: object) -> None:
+                self._select_device(i)
+            return _cb
+
+        def _dev_checked(i: int | None) -> Callable:
+            def _cb(_item: object) -> bool:
+                return self._current_device == i
+            return _cb
+
+        devices = _get_input_devices()
+        device_items: list = [
+            pystray.MenuItem(
+                "Default",
+                _dev_action(None),
+                checked=_dev_checked(None),
+                radio=True,
+            ),
+        ]
+        if devices:
+            device_items.append(pystray.Menu.SEPARATOR)
+            for idx, name, is_default in devices:
+                label = f"{name} (system default)" if is_default else name
+                device_items.append(pystray.MenuItem(
+                    label,
+                    _dev_action(idx),
+                    checked=_dev_checked(idx),
+                    radio=True,
+                ))
+
+        # ── Model submenu ───────────────────────────────────────────
+        def _model_action(m: str) -> Callable:
+            def _cb(_icon: object, _item: object) -> None:
+                self._select_model(m)
+            return _cb
+
+        def _model_checked(m: str) -> Callable:
+            def _cb(_item: object) -> bool:
+                return self._current_model == m
+            return _cb
+
+        model_items = []
+        for model_name in _TRAY_MODELS:
+            model_items.append(pystray.MenuItem(
+                model_name,
+                _model_action(model_name),
+                checked=_model_checked(model_name),
+                radio=True,
+            ))
+
+        # ── Mode submenu ────────────────────────────────────────────
+        def _mode_action(m: str) -> Callable:
+            def _cb(_icon: object, _item: object) -> None:
+                self._select_mode(m)
+            return _cb
+
+        def _mode_checked(m: str) -> Callable:
+            def _cb(_item: object) -> bool:
+                return self._current_mode == m
+            return _cb
+
+        mode_items = [
+            pystray.MenuItem(
+                "Live (always listening)",
+                _mode_action("live"),
+                checked=_mode_checked("live"),
+                radio=True,
+            ),
+            pystray.MenuItem(
+                "Hotkey (push to talk)",
+                _mode_action("hotkey"),
+                checked=_mode_checked("hotkey"),
+                radio=True,
+            ),
+        ]
+
+        # ── Quit ────────────────────────────────────────────────────
         def on_quit_clicked(_icon: object, _item: object) -> None:
             try:
                 self._on_quit()
@@ -176,5 +347,14 @@ class TrayIcon:
             pystray.MenuItem(status_text, None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(pause_text, on_pause_clicked),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Audio Device", pystray.Menu(*device_items)),
+            pystray.MenuItem("Model", pystray.Menu(*model_items)),
+            pystray.MenuItem("Mode", pystray.Menu(*mode_items)),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                "Edit Phrasebook",
+                lambda _icon, _item: self._on_open_phrasebook(),
+            ),
             pystray.MenuItem("Quit", on_quit_clicked),
         )

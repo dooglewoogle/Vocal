@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import logging
 import signal
+import subprocess
 import sys
 import threading
 from collections.abc import Callable
 
-from vocal.config import CONFIG_PATH, VocalConfig, load_config
+from vocal.config import CONFIG_DIR, CONFIG_PATH, VocalConfig, load_config
+from vocal.state import DictationState
 from vocal.phrasebook import Phrasebook
 from vocal.utils import (
     check_dependencies,
@@ -181,19 +183,44 @@ def _run_with_tray(
     phrasebook: Phrasebook | None,
 ) -> None:
     """Main-thread flow: construct tray + engine, wire shutdown, run."""
+    from vocal.audio import resolve_device
+    from vocal.base_engine import BaseDictationEngine
     from vocal.tray import TrayIcon
 
     shutdown_started = threading.Event()
+    switching_mode = threading.Event()
     # Hold a reference to the engine so menu callbacks built before the engine
     # exists can resolve it later.
     holder: dict[str, object] = {}
 
     def request_shutdown() -> None:
+        if switching_mode.is_set():
+            return  # suppress during mode switch
         if shutdown_started.is_set():
             return
         shutdown_started.set()
         logger.info("Shutdown requested; stopping tray")
         tray.stop()
+
+    # ── Engine factory ──────────────────────────────────────────────
+
+    def _make_engine(mode: str) -> BaseDictationEngine:
+        if mode == "live":
+            from vocal.live import LiveDictationEngine
+            return LiveDictationEngine(
+                config, phrasebook, args.phrasebook, args.phrasebook_replace,
+                on_state_change=tray.set_state,
+                on_shutdown_requested=request_shutdown,
+            )
+        else:
+            from vocal.engine import DictationEngine
+            return DictationEngine(
+                config, phrasebook, args.phrasebook, args.phrasebook_replace,
+                on_state_change=tray.set_state,
+                on_shutdown_requested=request_shutdown,
+            )
+
+    # ── Tray callbacks ──────────────────────────────────────────────
 
     def on_toggle_pause() -> None:
         engine = holder.get("engine")
@@ -203,31 +230,70 @@ def _run_with_tray(
         else:
             logger.info("Pause requested — not supported in this mode")
 
+    def on_select_device(device_index: int | None) -> None:
+        engine = holder.get("engine")
+        switch = getattr(engine, "switch_device", None)
+        if callable(switch):
+            switch(device_index)
+
+    def on_select_model(model_name: str) -> None:
+        engine = holder.get("engine")
+        switch = getattr(engine, "switch_model", None)
+        if callable(switch):
+            switch(model_name)
+
+    def on_switch_mode(mode: str) -> None:
+        switching_mode.set()
+        try:
+            old_engine = holder.get("engine")
+            if old_engine:
+                old_engine.shutdown()  # type: ignore[union-attr]
+
+            new_engine = _make_engine(mode)
+            holder["engine"] = new_engine
+            new_engine.start()
+            tray.set_state(DictationState.LISTENING)
+            logger.info("Switched to %s mode", mode)
+        except Exception:
+            logger.exception("Mode switch to %s failed", mode)
+        finally:
+            switching_mode.clear()
+
+    def on_open_phrasebook() -> None:
+        from vocal.phrasebook import PHRASEBOOK_PATH
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        if not PHRASEBOOK_PATH.exists():
+            PHRASEBOOK_PATH.write_text(
+                "# Vocal Phrasebook — custom vocabulary and corrections\n"
+                "#\n"
+                "# [replacements]\n"
+                '# "mishearing" = "correct term"\n',
+            )
+        if sys.platform == "linux":
+            subprocess.Popen(["xdg-open", str(PHRASEBOOK_PATH)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(PHRASEBOOK_PATH)])
+        else:
+            import os
+            os.startfile(str(PHRASEBOOK_PATH))  # type: ignore[attr-defined]
+
+    # ── Build tray + engine ─────────────────────────────────────────
+
+    initial_mode = "hotkey" if args.hotkey else "live"
+
     tray = TrayIcon(
         on_toggle_pause=on_toggle_pause,
         on_quit=request_shutdown,
+        on_select_device=on_select_device,
+        on_select_model=on_select_model,
+        on_switch_mode=on_switch_mode,
+        on_open_phrasebook=on_open_phrasebook,
+        current_model=config.model.size,
+        current_mode=initial_mode,
+        current_device=resolve_device(config.audio.device),
     )
 
-    from vocal.base_engine import BaseDictationEngine
-
-    # Default is live mode unless --hotkey is explicitly passed.
-    use_live = not args.hotkey
-
-    engine: BaseDictationEngine
-    if use_live:
-        from vocal.live import LiveDictationEngine
-        engine = LiveDictationEngine(
-            config, phrasebook, args.phrasebook, args.phrasebook_replace,
-            on_state_change=tray.set_state,
-            on_shutdown_requested=request_shutdown,
-        )
-    else:
-        from vocal.engine import DictationEngine
-        engine = DictationEngine(
-            config, phrasebook, args.phrasebook, args.phrasebook_replace,
-            on_state_change=tray.set_state,
-            on_shutdown_requested=request_shutdown,
-        )
+    engine = _make_engine(initial_mode)
     holder["engine"] = engine
 
     _install_shutdown_handlers(request_shutdown)
