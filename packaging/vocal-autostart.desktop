@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Vocal
+Comment=Local CPU-only dictation — speak and text appears
+Exec=vocal
+Icon=audio-input-microphone
+Categories=Utility;AudioVideo;
+StartupNotify=false
+Terminal=false
+X-GNOME-Autostart-enabled=true

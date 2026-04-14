@@ -2,27 +2,24 @@
 
 from __future__ import annotations
 
-import enum
 import logging
-import threading
+from collections.abc import Callable
 
 from vocal.audio import AudioBuffer, AudioCapture
 from vocal.base_engine import BaseDictationEngine
 from vocal.config import VocalConfig
 from vocal.hotkey import create_listener
 from vocal.phrasebook import Phrasebook
+from vocal.state import DictationState
 
 logger = logging.getLogger(__name__)
 
 
-class State(enum.Enum):
-    IDLE = "idle"
-    RECORDING = "recording"
-    TRANSCRIBING = "transcribing"
-
-
 class DictationEngine(BaseDictationEngine):
     """Hotkey-driven dictation: press to record, release to transcribe."""
+
+    # Hotkey mode has no paused state — it's always LISTENING when idle.
+    _idle_state = DictationState.LISTENING
 
     def __init__(
         self,
@@ -30,10 +27,14 @@ class DictationEngine(BaseDictationEngine):
         phrasebook: Phrasebook | None = None,
         phrasebook_seed: bool = False,
         phrasebook_replace: bool = False,
+        on_state_change: Callable[[DictationState], None] | None = None,
+        on_shutdown_requested: Callable[[], None] | None = None,
     ) -> None:
-        super().__init__(config, phrasebook, phrasebook_seed, phrasebook_replace)
-        self._state = State.IDLE
-        self._state_lock = threading.Lock()
+        super().__init__(
+            config, phrasebook, phrasebook_seed, phrasebook_replace,
+            on_state_change=on_state_change,
+            on_shutdown_requested=on_shutdown_requested,
+        )
 
         # Audio
         self._buffer = AudioBuffer(sample_rate=config.audio.sample_rate)
@@ -46,44 +47,35 @@ class DictationEngine(BaseDictationEngine):
             on_stop=self._on_recording_stop,
         )
 
-    # ── State management ────────────────────────────────────────────
-
-    def _set_state(self, state: State) -> None:
-        with self._state_lock:
-            self._state = state
-            logger.debug("State \u2192 %s", state.value)
-
-    def _on_transcription_complete(self) -> None:
-        self._set_state(State.IDLE)
-
     # ── Recording callbacks ─────────────────────────────────────────
 
     def _on_recording_start(self) -> None:
         """Called by hotkey listener when recording should begin."""
         with self._state_lock:
-            if self._state != State.IDLE:
+            if self._state != DictationState.LISTENING:
                 logger.warning("Cannot start recording in state %s", self._state.value)
                 return
             self._buffer.clear()
             self._audio.recording = True
-            self._state = State.RECORDING
-
+        # Transition outside the lock so _on_state_change can fire hooks safely.
+        self._set_state(DictationState.RECORDING)
         print("\U0001f399  Recording...", flush=True)
 
     def _on_recording_stop(self) -> None:
         """Called by hotkey listener when recording should end."""
         with self._state_lock:
-            if self._state != State.RECORDING:
+            if self._state != DictationState.RECORDING:
                 logger.warning("Cannot stop recording in state %s", self._state.value)
                 return
             self._audio.recording = False
             audio = self._buffer.flush()
-            self._state = State.TRANSCRIBING
+
+        self._set_state(DictationState.TRANSCRIBING)
 
         duration = audio.size / self._config.audio.sample_rate
         if duration < 0.5:
             print("\u23ed  Too short, skipping.", flush=True)
-            self._set_state(State.IDLE)
+            self._set_state(DictationState.LISTENING)
             return
 
         print(f"\u23f3 Transcribing {duration:.1f}s of audio...", flush=True)

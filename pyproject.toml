@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vocal"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local CPU-only dictation tool using faster-whisper"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
@@ -13,6 +13,8 @@ dependencies = [
     "sounddevice>=0.5.0",
     "numpy>=1.24.0",
     "pynput>=1.7.6",
+    "pystray>=0.19",
+    "Pillow>=10.0",
     "evdev>=1.7.0; sys_platform == 'linux'",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
@@ -22,3 +24,6 @@ vocal = "vocal.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+vocal = ["assets/*.png"]

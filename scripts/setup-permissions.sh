@@ -18,11 +18,22 @@ case "$(uname -s)" in
             MISSING+=("portaudio19-dev")
         fi
 
+        # Tray icon dependencies (pystray / AppIndicator)
+        if ! python3 -c "import gi" &>/dev/null; then
+            MISSING+=("python3-gi")
+        fi
+        if ! dpkg -l gir1.2-ayatanaappindicator3-0.1 &>/dev/null 2>&1; then
+            MISSING+=("gir1.2-ayatanaappindicator3-0.1")
+        fi
+        if ! command -v notify-send &>/dev/null; then
+            MISSING+=("libnotify-bin")
+        fi
+
         if [ ${#MISSING[@]} -gt 0 ]; then
             echo "Installing missing system packages: ${MISSING[*]}"
             sudo apt-get install -y "${MISSING[@]}"
         else
-            echo "✓ System packages OK (xdotool, xclip, portaudio19-dev)"
+            echo "✓ System packages OK"
         fi
 
         echo

@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import signal
 import sys
+import threading
+from collections.abc import Callable
 
-from vocal.config import load_config, CONFIG_PATH
-from vocal.utils import check_dependencies, setup_logging
+from vocal.config import CONFIG_PATH, VocalConfig, load_config
+from vocal.phrasebook import Phrasebook
+from vocal.utils import (
+    check_dependencies,
+    check_tray_dependencies,
+    log_startup_banner,
+    setup_logging,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,9 +66,14 @@ def parse_args() -> argparse.Namespace:
         "--list-devices", action="store_true",
         help="List available audio devices and exit",
     )
-    parser.add_argument(
-        "--live", action="store_true",
-        help="Live mode: always-on VAD-driven dictation (no hotkey needed)",
+    engine_group = parser.add_mutually_exclusive_group()
+    engine_group.add_argument(
+        "--live", action="store_true", default=False,
+        help="Live VAD-driven dictation (the default — flag accepted for clarity)",
+    )
+    engine_group.add_argument(
+        "--hotkey", action="store_true", default=False,
+        help="Hotkey-driven dictation (press to record, release to transcribe)",
     )
     parser.add_argument(
         "--silence-ms", type=int, default=None,
@@ -98,6 +115,129 @@ def list_audio_devices() -> None:
             print(f"  [{i}] {dev['name']}{default}")
             print(f"       channels={dev['max_input_channels']}, rate={dev['default_samplerate']}")
     print()
+
+
+def _install_shutdown_handlers(on_shutdown: Callable[[], None]) -> None:
+    """Wire SIGINT/SIGTERM to the shutdown callback.
+
+    On Linux the tray runs a GTK main loop; plain signal.signal handlers
+    won't be delivered promptly (GLib doesn't yield to Python's handler
+    between iterations). GLib.unix_signal_add routes signals through the
+    same loop that pystray is using, so they fire cleanly.
+
+    On other platforms, fall back to signal.signal — pystray's Cocoa /
+    Win32 backends handle this adequately for now.
+    """
+    if sys.platform == "linux":
+        try:
+            import gi
+            gi.require_version("GLib", "2.0")
+            from gi.repository import GLib
+
+            def _glib_handler(*_args: object) -> bool:
+                on_shutdown()
+                return False  # GLib removes the source after False
+
+            GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, _glib_handler)
+            GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, _glib_handler)
+            logger.debug("Installed GLib signal handlers for SIGINT/SIGTERM")
+            return
+        except (ImportError, ValueError) as e:
+            logger.warning("GLib signal install failed (%s); using signal.signal", e)
+
+    def _py_handler(_signum: int, _frame: object) -> None:
+        on_shutdown()
+
+    signal.signal(signal.SIGINT, _py_handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _py_handler)
+
+
+def _fail_missing(missing: list[str], missing_tray: list[str]) -> None:
+    """Print missing-dep guidance and exit with non-zero status."""
+    if missing:
+        print(f"Missing system dependencies: {', '.join(missing)}", file=sys.stderr)
+        if sys.platform == "linux":
+            print("Install with: sudo apt install " + " ".join(missing), file=sys.stderr)
+        elif sys.platform == "darwin":
+            print("These should be built into macOS. Check your PATH.", file=sys.stderr)
+    if missing_tray:
+        print(
+            "\nMissing tray dependencies:\n  " + "\n  ".join(missing_tray),
+            file=sys.stderr,
+        )
+        if sys.platform == "linux":
+            print(
+                "\nOn GNOME, also install the 'AppIndicator and KStatusNotifierItem "
+                "Support' extension — vanilla GNOME has no built-in tray.",
+                file=sys.stderr,
+            )
+    sys.exit(1)
+
+
+def _run_with_tray(
+    config: VocalConfig,
+    args: argparse.Namespace,
+    phrasebook: Phrasebook | None,
+) -> None:
+    """Main-thread flow: construct tray + engine, wire shutdown, run."""
+    from vocal.tray import TrayIcon
+
+    shutdown_started = threading.Event()
+    # Hold a reference to the engine so menu callbacks built before the engine
+    # exists can resolve it later.
+    holder: dict[str, object] = {}
+
+    def request_shutdown() -> None:
+        if shutdown_started.is_set():
+            return
+        shutdown_started.set()
+        logger.info("Shutdown requested; stopping tray")
+        tray.stop()
+
+    def on_toggle_pause() -> None:
+        engine = holder.get("engine")
+        toggle = getattr(engine, "toggle_pause", None)
+        if callable(toggle):
+            toggle()
+        else:
+            logger.info("Pause requested — not supported in this mode")
+
+    tray = TrayIcon(
+        on_toggle_pause=on_toggle_pause,
+        on_quit=request_shutdown,
+    )
+
+    from vocal.base_engine import BaseDictationEngine
+
+    # Default is live mode unless --hotkey is explicitly passed.
+    use_live = not args.hotkey
+
+    engine: BaseDictationEngine
+    if use_live:
+        from vocal.live import LiveDictationEngine
+        engine = LiveDictationEngine(
+            config, phrasebook, args.phrasebook, args.phrasebook_replace,
+            on_state_change=tray.set_state,
+            on_shutdown_requested=request_shutdown,
+        )
+    else:
+        from vocal.engine import DictationEngine
+        engine = DictationEngine(
+            config, phrasebook, args.phrasebook, args.phrasebook_replace,
+            on_state_change=tray.set_state,
+            on_shutdown_requested=request_shutdown,
+        )
+    holder["engine"] = engine
+
+    _install_shutdown_handlers(request_shutdown)
+
+    engine.start()
+    try:
+        tray.run()  # blocks main; returns when tray.stop() is called
+    finally:
+        engine.shutdown()
+        logger.info("Engine shutdown complete")
 
 
 def main() -> None:
@@ -142,17 +282,14 @@ def main() -> None:
     if args.silence_ms is not None:
         config.live.min_silence_duration_ms = args.silence_ms
 
-    setup_logging(config.log_level)
+    log_path = setup_logging(config.log_level)
+    log_startup_banner(log_path)
 
-    # Check system dependencies
+    # Check system + tray dependencies together — fail fast with one message.
     missing = check_dependencies(config.output.method)
-    if missing:
-        print(f"Missing system dependencies: {', '.join(missing)}", file=sys.stderr)
-        if sys.platform == "linux":
-            print("Install with: sudo apt install " + " ".join(missing), file=sys.stderr)
-        elif sys.platform == "darwin":
-            print("These should be built into macOS. Check your PATH.", file=sys.stderr)
-        sys.exit(1)
+    missing_tray = check_tray_dependencies()
+    if missing or missing_tray:
+        _fail_missing(missing, missing_tray)
 
     # Load phrasebook if either flag is set
     phrasebook = None
@@ -160,16 +297,4 @@ def main() -> None:
         from vocal.phrasebook import load_phrasebook
         phrasebook = load_phrasebook()
 
-    # Run the engine
-    if args.live:
-        from vocal.live import LiveDictationEngine
-        engine = LiveDictationEngine(
-            config, phrasebook, args.phrasebook, args.phrasebook_replace,
-        )
-    else:
-        from vocal.engine import DictationEngine
-        engine = DictationEngine(
-            config, phrasebook, args.phrasebook, args.phrasebook_replace,
-        )
-
-    engine.run()
+    _run_with_tray(config, args, phrasebook)

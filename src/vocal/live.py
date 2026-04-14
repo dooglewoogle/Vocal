@@ -6,6 +6,7 @@ import logging
 import queue
 import threading
 from collections import deque
+from collections.abc import Callable
 
 import numpy as np
 import sounddevice as sd
@@ -15,6 +16,7 @@ from vocal.base_engine import BaseDictationEngine
 from vocal.config import VocalConfig
 from vocal.hotkey import create_listener
 from vocal.phrasebook import Phrasebook
+from vocal.state import DictationState
 from vocal.vad import WINDOW_SAMPLES, SpeechDetector, StreamingVAD
 
 logger = logging.getLogger(__name__)
@@ -29,8 +31,14 @@ class LiveDictationEngine(BaseDictationEngine):
         phrasebook: Phrasebook | None = None,
         phrasebook_seed: bool = False,
         phrasebook_replace: bool = False,
+        on_state_change: Callable[[DictationState], None] | None = None,
+        on_shutdown_requested: Callable[[], None] | None = None,
     ) -> None:
-        super().__init__(config, phrasebook, phrasebook_seed, phrasebook_replace)
+        super().__init__(
+            config, phrasebook, phrasebook_seed, phrasebook_replace,
+            on_state_change=on_state_change,
+            on_shutdown_requested=on_shutdown_requested,
+        )
 
         # VAD
         self._vad = StreamingVAD()
@@ -65,12 +73,21 @@ class LiveDictationEngine(BaseDictationEngine):
 
     # ── Pause/unpause callbacks ────────────────────────────────────
 
+    def toggle_pause(self) -> None:
+        """Public toggle for external callers (tray menu, IPC, tests)."""
+        if self._paused.is_set():
+            self._on_unpause()
+        else:
+            self._on_pause()
+
     def _on_pause(self) -> None:
         """Called by hotkey listener to pause live listening."""
         self._paused.set()
         # Flush any in-progress utterance so partial audio isn't left dangling
         if self._in_speech:
             self._flush_utterance()
+        self._idle_state = DictationState.SLEEPING
+        self._set_state(DictationState.SLEEPING)
         print("\u23f8  Paused", flush=True)
 
     def _on_unpause(self) -> None:
@@ -79,6 +96,8 @@ class LiveDictationEngine(BaseDictationEngine):
         self._detector.reset()
         self._preroll.clear()
         self._paused.clear()
+        self._idle_state = DictationState.LISTENING
+        self._set_state(DictationState.LISTENING)
         print("\u25b6  Listening...", flush=True)
 
     # ── Audio callback ──────────────────────────────────────────────
@@ -137,6 +156,7 @@ class LiveDictationEngine(BaseDictationEngine):
                     self._in_speech = True
                     self._utterance_chunks = list(self._preroll)
                     self._preroll.clear()
+                    self._set_state(DictationState.RECORDING)
                     print("\U0001f399  Speech detected...", flush=True)
 
                 elif event == "speech_end" and self._in_speech:
@@ -146,6 +166,7 @@ class LiveDictationEngine(BaseDictationEngine):
         """Extract buffered speech audio and send to transcription."""
         if not self._utterance_chunks:
             self._in_speech = False
+            self._set_state(self._idle_state)
             return
 
         audio = np.concatenate(self._utterance_chunks)
@@ -153,9 +174,11 @@ class LiveDictationEngine(BaseDictationEngine):
 
         if duration >= 0.5:
             print(f"\u23f3 Transcribing {duration:.1f}s...", flush=True)
+            self._set_state(DictationState.TRANSCRIBING)
             self._transcription_queue.put(audio)
         else:
             logger.debug("Speech too short (%.2fs), skipping", duration)
+            self._set_state(self._idle_state)
 
         self._utterance_chunks.clear()
         self._in_speech = False

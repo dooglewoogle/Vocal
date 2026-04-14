@@ -2,21 +2,23 @@
 
 Local, CPU-only dictation. Speak and text appears in the active window. No cloud, no GPU, no latency surprises.
 
-Built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) with streaming voice activity detection.
+Built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) with streaming voice activity detection and a system tray icon for always-on operation.
 
 ## Platform
 
-- **OS**: Linux (X11/Xorg)
+- **OS**: Linux (X11/Xorg), macOS (experimental)
 - **Python**: 3.10+
 - **CPU**: Any x86_64 — runs int8 quantised by default
 - **Audio**: Any ALSA/PulseAudio/PipeWire input device
+- **Desktop**: System tray required (see [Tray support](#tray-support))
 
 ## Installation
 
 ### 1. System dependencies
 
 ```bash
-sudo apt install xdotool xclip portaudio19-dev
+sudo apt install xdotool xclip portaudio19-dev \
+    python3-gi gir1.2-ayatanaappindicator3-0.1 libnotify-bin
 ```
 
 Or run the setup script:
@@ -41,23 +43,19 @@ source .venv/bin/activate
 pip install .
 ```
 
-For X11 fallback hotkeys (if evdev isn't available):
-
-```bash
-pip install '.[pynput]'
-```
-
 ## Quick start
 
 ```bash
-# Hotkey mode — press Pause key to start/stop recording
+# Default: live mode — always listening, auto-detects speech
 vocal
 
-# Live mode — always listening, auto-detects speech
-vocal --live
+# Hotkey mode — press Pause key to start/stop recording
+vocal --hotkey
 ```
 
 The first run downloads the Whisper model (~500 MB for `small.en`). Subsequent runs start in seconds.
+
+A tray icon appears: green when listening, grey when paused, amber when transcribing.
 
 ## Usage
 
@@ -65,9 +63,9 @@ The first run downloads the Whisper model (~500 MB for `small.en`). Subsequent r
 
 | Mode | Command | How it works |
 |------|---------|-------------|
-| **Hotkey** | `vocal` | Press hotkey to record, press again to transcribe |
-| **Push-to-talk** | `vocal --mode ptt` | Hold hotkey to record, release to transcribe |
-| **Live** | `vocal --live` | Always-on; VAD detects speech boundaries automatically |
+| **Live** (default) | `vocal` | Always-on; VAD detects speech boundaries automatically |
+| **Hotkey** | `vocal --hotkey` | Press hotkey to record, press again to transcribe |
+| **Push-to-talk** | `vocal --hotkey --mode ptt` | Hold hotkey to record, release to transcribe |
 
 In live mode the hotkey pauses/resumes listening (hold-to-mute in PTT mode).
 
@@ -113,21 +111,16 @@ Two independent flags control how the phrasebook is used:
 | `--phrasebook-replace` | Applies find/replace corrections after transcription |
 
 ```bash
-# Seed only — nudge the decoder, no post-fix
-vocal --live --phrasebook
-
-# Replace only — catch-and-fix after transcription
-vocal --live --phrasebook-replace
-
 # Both layers (recommended)
-vocal --live --phrasebook --phrasebook-replace
+vocal --phrasebook --phrasebook-replace
 ```
 
 ### All CLI flags
 
 ```
 Dictation:
-  --live                    Always-on VAD mode (no hotkey to start)
+  --live                    Live VAD-driven mode (the default)
+  --hotkey                  Hotkey-driven mode (press to record)
   --mode {toggle,ptt}       Hotkey mode (default: toggle)
   --key KEY                 Hotkey name: PAUSE, F18, SCROLLLOCK, etc.
   --hotkey-backend {evdev,pynput}
@@ -192,3 +185,33 @@ remove_hallucinations = true
 ```
 
 CLI flags override config file values.
+
+## Tray support
+
+Vocal runs as a system tray application. The tray icon shows the current state and provides a menu to pause/resume or quit.
+
+| Desktop | Status |
+|---------|--------|
+| KDE Plasma | Works out of the box |
+| XFCE | Works out of the box |
+| Cinnamon | Works out of the box |
+| GNOME | Requires the [AppIndicator and KStatusNotifierItem Support](https://extensions.gnome.org/extension/615/appindicator-support/) extension |
+| Sway / i3 | Requires a status bar with StatusNotifierItem support (e.g. waybar) |
+
+## Run at login
+
+Copy the autostart desktop entry:
+
+```bash
+cp packaging/vocal-autostart.desktop ~/.config/autostart/
+```
+
+Or add to your app menu:
+
+```bash
+cp packaging/vocal.desktop ~/.local/share/applications/
+```
+
+## Logs
+
+Vocal writes a rotating log file to `~/.local/state/vocal/vocal.log` (Linux) or `~/Library/Logs/vocal/vocal.log` (macOS). The log rotates at 1 MB with 5 backups (~6 MB max). Errors also appear on stderr if running from a terminal.

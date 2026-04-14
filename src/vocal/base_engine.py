@@ -12,9 +12,11 @@ from collections.abc import Callable
 import numpy as np
 
 from vocal.config import VocalConfig
+from vocal.notify import notify
 from vocal.output import inject_text
 from vocal.phrasebook import Phrasebook
 from vocal.postprocess import postprocess
+from vocal.state import DictationState
 from vocal.transcriber import Transcriber
 
 logger = logging.getLogger(__name__)
@@ -23,16 +25,26 @@ logger = logging.getLogger(__name__)
 class BaseDictationEngine(ABC):
     """Base class providing shared transcription pipeline, shutdown, and signal handling."""
 
+    #: State to return to after an utterance finishes transcribing.
+    #: Live mode overrides to LISTENING (or SLEEPING if paused); hotkey
+    #: mode stays LISTENING.
+    _idle_state: DictationState = DictationState.LISTENING
+
     def __init__(
         self,
         config: VocalConfig,
         phrasebook: Phrasebook | None = None,
         phrasebook_seed: bool = False,
         phrasebook_replace: bool = False,
+        on_state_change: Callable[[DictationState], None] | None = None,
+        on_shutdown_requested: Callable[[], None] | None = None,
     ) -> None:
         self._config = config
         self._shutdown = threading.Event()
         self._phrasebook = phrasebook if phrasebook_replace else None
+        self._state_callback = on_state_change
+        self._shutdown_callback = on_shutdown_requested
+        self._engine_thread: threading.Thread | None = None
 
         self._transcriber = Transcriber(
             config.model, config.vad,
@@ -43,6 +55,39 @@ class BaseDictationEngine(ABC):
         self._output_queue: queue.Queue[str | None] = queue.Queue()
 
         self._threads: list[threading.Thread] = []
+
+        # Canonical state. Subclasses own the lock; base just reads/writes under it.
+        self._state: DictationState = DictationState.LISTENING
+        self._state_lock = threading.Lock()
+
+    # ── State management ────────────────────────────────────────────
+
+    def _set_state(self, state: DictationState) -> None:
+        """Atomically update state and fire the on-change hook."""
+        with self._state_lock:
+            if self._state == state:
+                return
+            prev = self._state
+            self._state = state
+        logger.debug("State %s -> %s", prev.value, state.value)
+        try:
+            self._on_state_change(state)
+        except Exception:
+            logger.exception("State-change hook raised")
+
+    def _on_state_change(self, state: DictationState) -> None:
+        """Called outside the state lock on every transition. Notifies observer."""
+        if self._state_callback is not None:
+            try:
+                self._state_callback(state)
+            except Exception:
+                logger.exception("State-change observer raised")
+
+    @property
+    def current_state(self) -> DictationState:
+        """Read the current state. Safe from any thread."""
+        with self._state_lock:
+            return self._state
 
     # ── Shared workers ──────────────────────────────────────────────
 
@@ -57,18 +102,24 @@ class BaseDictationEngine(ABC):
             if audio is None:
                 break
 
-            text = self._transcriber.transcribe(audio)
-            text = postprocess(text, self._config.postprocess, self._phrasebook)
+            try:
+                text = self._transcriber.transcribe(audio)
+                text = postprocess(text, self._config.postprocess, self._phrasebook)
 
-            if text:
-                self._output_queue.put(text)
-            else:
-                logger.debug("Empty transcription after postprocessing")
-
-            self._on_transcription_complete()
+                if text:
+                    self._output_queue.put(text)
+                else:
+                    logger.debug("Empty transcription after postprocessing")
+            except Exception:
+                # Per-utterance failures should not kill the engine — log and
+                # move on so the user can dictate again.
+                logger.exception("Transcription failed for utterance")
+            finally:
+                self._on_transcription_complete()
 
     def _on_transcription_complete(self) -> None:
-        """Hook for subclasses to react after each transcription."""
+        """Hook called after each transcription. Default: return to idle state."""
+        self._set_state(self._idle_state)
 
     def _output_worker(self) -> None:
         """Thread: pull text from queue and inject into active window."""
@@ -105,7 +156,16 @@ class BaseDictationEngine(ABC):
             t.start()
 
     def _install_signal_handlers(self) -> None:
-        """Register SIGINT/SIGTERM to trigger shutdown."""
+        """Register SIGINT/SIGTERM to trigger shutdown.
+
+        Only safe to call on the main thread; no-op otherwise. When the engine
+        runs on a background thread (tray mode), the main thread owns signal
+        handling — see cli.install_shutdown_handlers().
+        """
+        if threading.current_thread() is not threading.main_thread():
+            logger.debug("Skipping signal install on non-main thread")
+            return
+
         def handle_signal(signum, frame):
             print("\nShutting down...", flush=True)
             self.shutdown()
@@ -113,6 +173,18 @@ class BaseDictationEngine(ABC):
         signal.signal(signal.SIGINT, handle_signal)
         if hasattr(signal, "SIGTERM"):
             signal.signal(signal.SIGTERM, handle_signal)
+
+    def _request_shutdown(self) -> None:
+        """Fire the external shutdown-requested callback once. Idempotent."""
+        if self._shutdown.is_set():
+            return
+        # Don't flip _shutdown here — shutdown() owns that. Just notify.
+        cb = self._shutdown_callback
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                logger.exception("on_shutdown_requested callback raised")
 
     # ── Shutdown ────────────────────────────────────────────────────
 
@@ -145,3 +217,30 @@ class BaseDictationEngine(ABC):
     @abstractmethod
     def run(self) -> None:
         """Start the engine and block until shutdown."""
+
+    def start(self) -> threading.Thread:
+        """Start run() on a background thread. Non-blocking; returns the thread.
+
+        Used by tray mode: the tray owns the main thread, so the engine
+        runs its blocking loop off-main. If run() exits for any reason —
+        graceful shutdown, listener crash, worker exception — the
+        on_shutdown_requested callback fires so the main thread can tear
+        down the tray loop and exit cleanly.
+        """
+        if self._engine_thread is not None:
+            raise RuntimeError("Engine already started")
+
+        def _body() -> None:
+            try:
+                self.run()
+            except Exception as exc:
+                logger.exception("Engine thread crashed")
+                notify("Vocal error", str(exc), urgency="critical")
+            finally:
+                self._request_shutdown()
+
+        self._engine_thread = threading.Thread(
+            target=_body, name="engine", daemon=True,
+        )
+        self._engine_thread.start()
+        return self._engine_thread
