@@ -112,7 +112,14 @@ def _inject_clipboard_macos(text: str) -> None:
 
 def _inject_xdotool_macos(text: str, delay_ms: int = 8) -> None:
     """Inject text by simulating keystrokes via osascript (macOS)."""
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = (
+        text
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
     _run(
         [
             "osascript", "-e",

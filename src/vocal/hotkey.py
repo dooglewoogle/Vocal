@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import select
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 from vocal.config import HotkeyConfig
 

@@ -185,6 +185,20 @@ class LiveDictationEngine(BaseDictationEngine):
         self._vad.reset()
         self._detector.reset()
 
+    # ── Audio stream management ─────────────────────────────────────
+
+    def _open_stream(self, device_index: int | None) -> None:
+        """Create and start an audio input stream for the given device."""
+        self._stream = sd.InputStream(
+            samplerate=self._config.audio.sample_rate,
+            channels=1,
+            dtype="float32",
+            blocksize=WINDOW_SAMPLES,
+            callback=self._audio_callback,
+            device=device_index,
+        )
+        self._stream.start()
+
     # ── Runtime switching ─────────────────────────────────────────
 
     def switch_device(self, device_index: int | None) -> None:
@@ -198,16 +212,7 @@ class LiveDictationEngine(BaseDictationEngine):
             self._stream.close()
 
         self._config.audio.device = str(device_index) if device_index is not None else None
-
-        self._stream = sd.InputStream(
-            samplerate=self._config.audio.sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=WINDOW_SAMPLES,
-            callback=self._audio_callback,
-            device=device_index,
-        )
-        self._stream.start()
+        self._open_stream(device_index)
         logger.info("Switched audio device to %s", device_index)
 
         if not was_paused:
@@ -230,16 +235,7 @@ class LiveDictationEngine(BaseDictationEngine):
     def run(self) -> None:
         """Load model, start all threads, block until shutdown."""
         self._transcriber.load()
-
-        self._stream = sd.InputStream(
-            samplerate=self._config.audio.sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=WINDOW_SAMPLES,
-            callback=self._audio_callback,
-            device=resolve_device(self._config.audio.device),
-        )
-        self._stream.start()
+        self._open_stream(resolve_device(self._config.audio.device))
 
         self._start_workers((self._vad_worker, "vad"))
         self._install_signal_handlers()

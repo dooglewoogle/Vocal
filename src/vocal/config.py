@@ -103,11 +103,19 @@ def _apply_dict(obj: object, d: dict) -> None:
         if isinstance(value, dict) and hasattr(current, "__dataclass_fields__"):
             _apply_dict(current, value)
         else:
-            if current is not None and not isinstance(value, type(current)):
-                raise TypeError(
-                    f"Config key {key!r}: expected {type(current).__name__}, "
-                    f"got {type(value).__name__} ({value!r})"
-                )
+            if current is not None:
+                # Reject bool for int fields — TOML distinguishes them even
+                # though Python's bool is a subclass of int.
+                if isinstance(value, bool) and isinstance(current, int) and not isinstance(current, bool):
+                    raise TypeError(
+                        f"Config key {key!r}: expected {type(current).__name__}, "
+                        f"got bool ({value!r})"
+                    )
+                if not isinstance(value, type(current)):
+                    raise TypeError(
+                        f"Config key {key!r}: expected {type(current).__name__}, "
+                        f"got {type(value).__name__} ({value!r})"
+                    )
             setattr(obj, key, value)
 
 

@@ -134,11 +134,6 @@ class TrayIcon:
         except Exception:
             logger.exception("Failed to update tray for state %s", state.value)
 
-    def set_mode(self, mode: str) -> None:
-        """Update the displayed current mode (called after engine swap)."""
-        self._current_mode = mode
-        self._update_menu()
-
     def run(self) -> None:
         """Block on the tray event loop. Must be called from the main thread."""
         import pystray

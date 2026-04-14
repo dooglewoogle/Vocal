@@ -202,7 +202,7 @@ class BaseDictationEngine(ABC):
 
         Only safe to call on the main thread; no-op otherwise. When the engine
         runs on a background thread (tray mode), the main thread owns signal
-        handling — see cli.install_shutdown_handlers().
+        handling — see cli._install_shutdown_handlers().
         """
         if threading.current_thread() is not threading.main_thread():
             logger.debug("Skipping signal install on non-main thread")
