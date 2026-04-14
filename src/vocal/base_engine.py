@@ -46,11 +46,13 @@ class BaseDictationEngine(ABC):
         self._shutdown_callback = on_shutdown_requested
         self._engine_thread: threading.Thread | None = None
 
+        self._seed_phrasebook = phrasebook if phrasebook_seed else None
         self._transcriber = Transcriber(
             config.model, config.vad,
             sample_rate=config.audio.sample_rate,
-            phrasebook=phrasebook if phrasebook_seed else None,
+            phrasebook=self._seed_phrasebook,
         )
+        self._model_loading = threading.Lock()
         self._transcription_queue: queue.Queue[np.ndarray | None] = queue.Queue()
         self._output_queue: queue.Queue[str | None] = queue.Queue()
 
@@ -88,6 +90,46 @@ class BaseDictationEngine(ABC):
         """Read the current state. Safe from any thread."""
         with self._state_lock:
             return self._state
+
+    # ── Runtime switching ──────────────────────────────────────────
+
+    def switch_model(self, model_name: str) -> None:
+        """Switch Whisper model in the background. Thread-safe, non-blocking."""
+        if model_name == self._config.model.size:
+            return
+        if not self._model_loading.acquire(blocking=False):
+            logger.info("Model switch already in progress, ignoring")
+            return
+
+        def _load() -> None:
+            try:
+                from vocal.config import ModelConfig
+                new_cfg = ModelConfig(
+                    size=model_name,
+                    compute_type=self._config.model.compute_type,
+                    beam_size=self._config.model.beam_size,
+                    cpu_threads=self._config.model.cpu_threads,
+                    language=self._config.model.language,
+                )
+                new_transcriber = Transcriber(
+                    new_cfg, self._config.vad,
+                    sample_rate=self._config.audio.sample_rate,
+                    phrasebook=self._seed_phrasebook,
+                )
+                print(f"\u2935  Loading model {model_name}...", flush=True)
+                new_transcriber.load()
+                # Atomic swap — old transcriber stays alive until in-flight work finishes
+                self._transcriber = new_transcriber
+                self._config.model.size = model_name
+                print(f"\u2705 Switched to model {model_name}", flush=True)
+                notify("Vocal", f"Model switched to {model_name}")
+            except Exception:
+                logger.exception("Failed to load model %s", model_name)
+                notify("Vocal", f"Failed to load model {model_name}", urgency="critical")
+            finally:
+                self._model_loading.release()
+
+        threading.Thread(target=_load, name="model-loader", daemon=True).start()
 
     # ── Shared workers ──────────────────────────────────────────────
 

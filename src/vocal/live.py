@@ -185,6 +185,34 @@ class LiveDictationEngine(BaseDictationEngine):
         self._vad.reset()
         self._detector.reset()
 
+    # ── Runtime switching ─────────────────────────────────────────
+
+    def switch_device(self, device_index: int | None) -> None:
+        """Switch audio input device. Pauses briefly during the swap."""
+        was_paused = self._paused.is_set()
+        if not was_paused:
+            self._on_pause()
+
+        if self._stream:
+            self._stream.stop()
+            self._stream.close()
+
+        self._config.audio.device = str(device_index) if device_index is not None else None
+
+        self._stream = sd.InputStream(
+            samplerate=self._config.audio.sample_rate,
+            channels=1,
+            dtype="float32",
+            blocksize=WINDOW_SAMPLES,
+            callback=self._audio_callback,
+            device=device_index,
+        )
+        self._stream.start()
+        logger.info("Switched audio device to %s", device_index)
+
+        if not was_paused:
+            self._on_unpause()
+
     # ── Overrides ───────────────────────────────────────────────────
 
     def _sentinel_queues(self) -> list[queue.Queue]:

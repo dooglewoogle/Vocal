@@ -81,6 +81,17 @@ class DictationEngine(BaseDictationEngine):
         print(f"\u23f3 Transcribing {duration:.1f}s of audio...", flush=True)
         self._transcription_queue.put(audio)
 
+    # ── Runtime switching ─────────────────────────────────────────
+
+    def switch_device(self, device_index: int | None) -> None:
+        """Switch audio input device."""
+        self._audio.recording = False
+        self._audio.stop()
+        self._config.audio.device = str(device_index) if device_index is not None else None
+        self._audio = AudioCapture(self._config.audio, self._buffer)
+        self._audio.start()
+        logger.info("Switched audio device to %s", device_index)
+
     # ── Resource cleanup ────────────────────────────────────────────
 
     def _cleanup_resources(self) -> None:
