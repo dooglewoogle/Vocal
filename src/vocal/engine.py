@@ -11,6 +11,7 @@ from vocal.config import VocalConfig
 from vocal.hotkey import create_listener
 from vocal.phrasebook import Phrasebook
 from vocal.state import DictationState
+from vocal.volume import Ducker, detect_backend
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,15 @@ class DictationEngine(BaseDictationEngine):
             on_stop=self._on_recording_stop,
         )
 
+        # Volume ducking (optional)
+        self._ducker: Ducker | None = None
+        if config.hotkey.duck:
+            backend = detect_backend()
+            if backend is not None:
+                self._ducker = Ducker(config.hotkey.duck_amount, backend)
+            else:
+                logger.warning("Ducking enabled but no volume backend available")
+
     # ── Recording callbacks ─────────────────────────────────────────
 
     def _on_recording_start(self) -> None:
@@ -59,6 +69,8 @@ class DictationEngine(BaseDictationEngine):
             self._audio.recording = True
         # Transition outside the lock so _on_state_change can fire hooks safely.
         self._set_state(DictationState.RECORDING)
+        if self._ducker is not None:
+            self._ducker.duck()
         print("\U0001f399  Recording...", flush=True)
 
     def _on_recording_stop(self) -> None:
@@ -70,6 +82,8 @@ class DictationEngine(BaseDictationEngine):
             self._audio.recording = False
             audio = self._buffer.flush()
 
+        if self._ducker is not None:
+            self._ducker.restore()
         self._set_state(DictationState.TRANSCRIBING)
 
         duration = audio.size / self._config.audio.sample_rate
@@ -98,6 +112,8 @@ class DictationEngine(BaseDictationEngine):
         self._listener.stop()
         self._audio.recording = False
         self._audio.stop()
+        if self._ducker is not None:
+            self._ducker.close()
 
     # ── Entry point ─────────────────────────────────────────────────
 

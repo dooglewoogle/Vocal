@@ -69,6 +69,14 @@ A tray icon appears: green when listening, grey when paused, amber when transcri
 
 In live mode the hotkey pauses/resumes listening (hold-to-mute in PTT mode).
 
+### Volume ducking
+
+In hotkey mode, `--duck` lowers the system output volume while you record so playback does not bleed into the mic, then ramps it back over ~300 ms when recording stops. `--duck-amount` is a relative cut: at 50 (the default), 80% volume drops to 40%. Uses `pactl`, `wpctl`, or `amixer` on Linux and `osascript` on macOS, whichever is found first. Live mode never ducks.
+
+```bash
+vocal --hotkey --mode ptt --duck --duck-amount 70
+```
+
 ### Text injection
 
 | Method | Flag | Notes |
@@ -124,6 +132,8 @@ Dictation:
   --mode {toggle,ptt}       Hotkey mode (default: toggle)
   --key KEY                 Hotkey name: PAUSE, F18, SCROLLLOCK, etc.
   --hotkey-backend {evdev,pynput}
+  --duck                    Lower system volume while recording (hotkey mode)
+  --duck-amount PCT         Relative volume cut when ducking, 0-100 (default: 50)
   --output {clipboard,xdotool}
   --silence-ms MS           Min silence before ending utterance (live mode, default: 600)
 
@@ -166,6 +176,8 @@ beam_size = 3
 key = "PAUSE"
 mode = "toggle"          # or "ptt"
 backend = "evdev"        # or "pynput"
+duck = false             # lower system volume while recording
+duck_amount = 50         # relative cut in percent
 
 [output]
 method = "clipboard"     # or "xdotool"

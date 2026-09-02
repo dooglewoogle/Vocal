@@ -51,6 +51,8 @@ class HotkeyConfig:
     backend: str = "auto"
     key: str = "PAUSE"
     mode: str = "toggle"
+    duck: bool = False
+    duck_amount: int = 50
 
 
 @dataclass

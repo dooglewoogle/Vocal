@@ -49,6 +49,14 @@ def parse_args() -> argparse.Namespace:
         help="Hotkey mode: toggle or push-to-talk",
     )
     parser.add_argument(
+        "--duck", action="store_true", default=None,
+        help="Lower system output volume while recording in hotkey mode",
+    )
+    parser.add_argument(
+        "--duck-amount", type=int, default=None,
+        help="Percent to reduce volume by when ducking, 0-100 (default: 50)",
+    )
+    parser.add_argument(
         "--output", type=str, choices=["clipboard", "xdotool"], default=None,
         help="Text injection method",
     )
@@ -338,6 +346,10 @@ def main() -> None:
         config.hotkey.key = args.key
     if args.mode:
         config.hotkey.mode = args.mode
+    if args.duck:
+        config.hotkey.duck = True
+    if args.duck_amount is not None:
+        config.hotkey.duck_amount = args.duck_amount
     if args.output:
         config.output.method = args.output
     if args.hotkey_backend:
@@ -356,6 +368,18 @@ def main() -> None:
     missing_tray = check_tray_dependencies()
     if missing or missing_tray:
         _fail_missing(missing, missing_tray)
+
+    if config.hotkey.duck:
+        from vocal.volume import candidate_tools, detect_backend
+        backend = detect_backend()
+        if backend is None:
+            logger.warning(
+                "Ducking requested but no volume tool found (tried: %s); disabling",
+                ", ".join(candidate_tools()) or "none for this platform",
+            )
+            config.hotkey.duck = False
+        else:
+            logger.info("Ducking enabled: -%d%% via %s", config.hotkey.duck_amount, backend.tool)
 
     # Load phrasebook if either flag is set
     phrasebook = None
