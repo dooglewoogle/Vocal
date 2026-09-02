@@ -10,7 +10,7 @@ import sys
 import threading
 from collections.abc import Callable
 
-from vocal.config import CONFIG_DIR, CONFIG_PATH, VocalConfig, load_config
+from vocal.config import CONFIG_DIR, CONFIG_PATH, ConfigError, VocalConfig, load_config
 from vocal.state import DictationState
 from vocal.input.phrasebook import Phrasebook
 from vocal.utils import (
@@ -307,7 +307,7 @@ def _run_with_tray(
 
     initial_mode = _resolve_initial_mode(args)
     if initial_mode == "hotkey":
-        logger.info("Starting in hotkey mode (%s, key=%s)", config.hotkey.mode, config.hotkey.key)
+        logger.info("Starting in hotkey mode (%s, key=%s)", config.input.hotkey.mode, config.input.hotkey.key)
     else:
         logger.info("Starting in live mode")
 
@@ -318,9 +318,9 @@ def _run_with_tray(
         on_select_model=on_select_model,
         on_switch_mode=on_switch_mode,
         on_open_phrasebook=on_open_phrasebook,
-        current_model=config.model.size,
+        current_model=config.input.model.size,
         current_mode=initial_mode,
-        current_device=resolve_device(config.audio.device),
+        current_device=resolve_device(config.input.audio.device),
     )
 
     engine = _make_engine(initial_mode)
@@ -355,43 +355,47 @@ def main() -> None:
     # Load config
     from pathlib import Path
     config_path = Path(args.config) if args.config else None
-    config = load_config(config_path)
+    try:
+        config = load_config(config_path)
+    except ConfigError as e:
+        print(f"Config error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Apply CLI overrides
     if args.model:
-        config.model.size = args.model
+        config.input.model.size = args.model
     if args.compute_type:
-        config.model.compute_type = args.compute_type
+        config.input.model.compute_type = args.compute_type
     if args.beam_size is not None:
-        config.model.beam_size = args.beam_size
+        config.input.model.beam_size = args.beam_size
     if args.key:
-        config.hotkey.key = args.key
+        config.input.hotkey.key = args.key
     if args.mode:
-        config.hotkey.mode = args.mode
+        config.input.hotkey.mode = args.mode
     if args.duck:
-        config.hotkey.duck = True
+        config.input.hotkey.duck = True
     if args.duck_amount is not None:
-        config.hotkey.duck_amount = args.duck_amount
+        config.input.hotkey.duck_amount = args.duck_amount
     if args.output:
-        config.output.method = args.output
+        config.input.inject.method = args.output
     if args.hotkey_backend:
-        config.hotkey.backend = args.hotkey_backend
+        config.input.hotkey.backend = args.hotkey_backend
     if args.log_level:
         config.log_level = args.log_level
 
     if args.silence_ms is not None:
-        config.live.min_silence_duration_ms = args.silence_ms
+        config.input.live.min_silence_duration_ms = args.silence_ms
 
     log_path = setup_logging(config.log_level)
     log_startup_banner(log_path)
 
     # Check system + tray dependencies together — fail fast with one message.
-    missing = check_dependencies(config.output.method)
+    missing = check_dependencies(config.input.inject.method)
     missing_tray = check_tray_dependencies()
     if missing or missing_tray:
         _fail_missing(missing, missing_tray)
 
-    if config.hotkey.duck:
+    if config.input.hotkey.duck:
         from vocal.volume import candidate_tools, detect_backend
         backend = detect_backend()
         if backend is None:
@@ -399,9 +403,9 @@ def main() -> None:
                 "Ducking requested but no volume tool found (tried: %s); disabling",
                 ", ".join(candidate_tools()) or "none for this platform",
             )
-            config.hotkey.duck = False
+            config.input.hotkey.duck = False
         else:
-            logger.info("Ducking enabled: -%d%% via %s", config.hotkey.duck_amount, backend.tool)
+            logger.info("Ducking enabled: -%d%% via %s", config.input.hotkey.duck_amount, backend.tool)
 
     # Load phrasebook if either flag is set
     phrasebook = None

@@ -48,8 +48,8 @@ class BaseDictationEngine(ABC):
 
         self._seed_phrasebook = phrasebook if phrasebook_seed else None
         self._transcriber = Transcriber(
-            config.model, config.vad,
-            sample_rate=config.audio.sample_rate,
+            config.input.model, config.input.vad,
+            sample_rate=config.input.audio.sample_rate,
             phrasebook=self._seed_phrasebook,
         )
         self._model_loading = threading.Lock()
@@ -95,7 +95,7 @@ class BaseDictationEngine(ABC):
 
     def switch_model(self, model_name: str) -> None:
         """Switch Whisper model in the background. Thread-safe, non-blocking."""
-        if model_name == self._config.model.size:
+        if model_name == self._config.input.model.size:
             return
         if not self._model_loading.acquire(blocking=False):
             logger.info("Model switch already in progress, ignoring")
@@ -106,21 +106,21 @@ class BaseDictationEngine(ABC):
                 from vocal.config import ModelConfig
                 new_cfg = ModelConfig(
                     size=model_name,
-                    compute_type=self._config.model.compute_type,
-                    beam_size=self._config.model.beam_size,
-                    cpu_threads=self._config.model.cpu_threads,
-                    language=self._config.model.language,
+                    compute_type=self._config.input.model.compute_type,
+                    beam_size=self._config.input.model.beam_size,
+                    cpu_threads=self._config.input.model.cpu_threads,
+                    language=self._config.input.model.language,
                 )
                 new_transcriber = Transcriber(
-                    new_cfg, self._config.vad,
-                    sample_rate=self._config.audio.sample_rate,
+                    new_cfg, self._config.input.vad,
+                    sample_rate=self._config.input.audio.sample_rate,
                     phrasebook=self._seed_phrasebook,
                 )
                 print(f"\u2935  Loading model {model_name}...", flush=True)
                 new_transcriber.load()
                 # Atomic swap — old transcriber stays alive until in-flight work finishes
                 self._transcriber = new_transcriber
-                self._config.model.size = model_name
+                self._config.input.model.size = model_name
                 print(f"\u2705 Switched to model {model_name}", flush=True)
                 notify("Vocal", f"Model switched to {model_name}")
             except Exception:
@@ -146,7 +146,7 @@ class BaseDictationEngine(ABC):
 
             try:
                 text = self._transcriber.transcribe(audio)
-                text = postprocess(text, self._config.postprocess, self._phrasebook)
+                text = postprocess(text, self._config.input.postprocess, self._phrasebook)
 
                 if text:
                     self._output_queue.put(text)
@@ -175,7 +175,7 @@ class BaseDictationEngine(ABC):
                 break
 
             try:
-                inject_text(text, self._config.output)
+                inject_text(text, self._config.input.inject)
                 print(f"\u2705 {text}", flush=True)
             except Exception:
                 logger.exception("Failed to inject text")

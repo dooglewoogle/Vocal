@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-from vocal.config import OutputConfig
+from vocal.config import InjectConfig
 from vocal.utils import is_wayland
 
 logger = logging.getLogger(__name__)
@@ -203,7 +203,7 @@ _XDOTOOL_DISPATCH = {
 }
 
 
-def inject_text(text: str, config: OutputConfig) -> None:
+def inject_text(text: str, config: InjectConfig) -> None:
     """Inject text using the configured method, dispatching per platform."""
     if not text:
         return

@@ -43,18 +43,18 @@ class LiveDictationEngine(BaseDictationEngine):
         # VAD
         self._vad = StreamingVAD()
         self._detector = SpeechDetector(
-            threshold=config.vad.threshold,
-            min_silence_duration_ms=config.live.min_silence_duration_ms,
-            min_speech_duration_ms=config.live.min_speech_duration_ms,
+            threshold=config.input.vad.threshold,
+            min_silence_duration_ms=config.input.live.min_silence_duration_ms,
+            min_speech_duration_ms=config.input.live.min_speech_duration_ms,
         )
 
         # Audio buffering
-        sample_rate = config.audio.sample_rate
-        pad_chunks = int(config.vad.speech_pad_ms * sample_rate / 1000 / WINDOW_SAMPLES)
+        sample_rate = config.input.audio.sample_rate
+        pad_chunks = int(config.input.vad.speech_pad_ms * sample_rate / 1000 / WINDOW_SAMPLES)
         self._preroll: deque[np.ndarray] = deque(maxlen=max(pad_chunks, 1))
         self._utterance_chunks: list[np.ndarray] = []
         self._in_speech = False
-        self._max_speech_chunks = int(config.live.max_speech_duration_s * sample_rate / WINDOW_SAMPLES)
+        self._max_speech_chunks = int(config.input.live.max_speech_duration_s * sample_rate / WINDOW_SAMPLES)
         self._raw_queue: queue.Queue[np.ndarray | None] = queue.Queue()
 
         # Audio stream (created in run())
@@ -66,7 +66,7 @@ class LiveDictationEngine(BaseDictationEngine):
         # resumes it.  In PTT mode this means hold-to-mute.
         self._paused = threading.Event()  # set = paused
         self._listener = create_listener(
-            config.hotkey,
+            config.input.hotkey,
             on_start=self._on_pause,
             on_stop=self._on_unpause,
         )
@@ -170,7 +170,7 @@ class LiveDictationEngine(BaseDictationEngine):
             return
 
         audio = np.concatenate(self._utterance_chunks)
-        duration = audio.size / self._config.audio.sample_rate
+        duration = audio.size / self._config.input.audio.sample_rate
 
         if duration >= 0.5:
             print(f"\u23f3 Transcribing {duration:.1f}s...", flush=True)
@@ -190,7 +190,7 @@ class LiveDictationEngine(BaseDictationEngine):
     def _open_stream(self, device_index: int | None) -> None:
         """Create and start an audio input stream for the given device."""
         self._stream = sd.InputStream(
-            samplerate=self._config.audio.sample_rate,
+            samplerate=self._config.input.audio.sample_rate,
             channels=1,
             dtype="float32",
             blocksize=WINDOW_SAMPLES,
@@ -211,7 +211,7 @@ class LiveDictationEngine(BaseDictationEngine):
             self._stream.stop()
             self._stream.close()
 
-        self._config.audio.device = str(device_index) if device_index is not None else None
+        self._config.input.audio.device = str(device_index) if device_index is not None else None
         self._open_stream(device_index)
         logger.info("Switched audio device to %s", device_index)
 
@@ -235,13 +235,13 @@ class LiveDictationEngine(BaseDictationEngine):
     def run(self) -> None:
         """Load model, start all threads, block until shutdown."""
         self._transcriber.load()
-        self._open_stream(resolve_device(self._config.audio.device))
+        self._open_stream(resolve_device(self._config.input.audio.device))
 
         self._start_workers((self._vad_worker, "vad"))
         self._install_signal_handlers()
 
-        key = self._config.hotkey.key
-        mode = self._config.hotkey.mode
+        key = self._config.input.hotkey.key
+        mode = self._config.input.hotkey.mode
         print(
             f"\nVocal live mode \u2014 listening for speech. "
             f"Press {key} ({mode}) to pause/resume. Ctrl+C to stop.\n",

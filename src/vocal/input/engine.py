@@ -38,22 +38,22 @@ class DictationEngine(BaseDictationEngine):
         )
 
         # Audio
-        self._buffer = AudioBuffer(sample_rate=config.audio.sample_rate)
-        self._audio = AudioCapture(config.audio, self._buffer)
+        self._buffer = AudioBuffer(sample_rate=config.input.audio.sample_rate)
+        self._audio = AudioCapture(config.input.audio, self._buffer)
 
         # Hotkey
         self._listener = create_listener(
-            config.hotkey,
+            config.input.hotkey,
             on_start=self._on_recording_start,
             on_stop=self._on_recording_stop,
         )
 
         # Volume ducking (optional)
         self._ducker: Ducker | None = None
-        if config.hotkey.duck:
+        if config.input.hotkey.duck:
             backend = detect_backend()
             if backend is not None:
-                self._ducker = Ducker(config.hotkey.duck_amount, backend)
+                self._ducker = Ducker(config.input.hotkey.duck_amount, backend)
             else:
                 logger.warning("Ducking enabled but no volume backend available")
 
@@ -86,7 +86,7 @@ class DictationEngine(BaseDictationEngine):
             self._ducker.restore()
         self._set_state(DictationState.TRANSCRIBING)
 
-        duration = audio.size / self._config.audio.sample_rate
+        duration = audio.size / self._config.input.audio.sample_rate
         if duration < 0.5:
             print("\u23ed  Too short, skipping.", flush=True)
             self._set_state(DictationState.LISTENING)
@@ -101,8 +101,8 @@ class DictationEngine(BaseDictationEngine):
         """Switch audio input device."""
         self._audio.recording = False
         self._audio.stop()
-        self._config.audio.device = str(device_index) if device_index is not None else None
-        self._audio = AudioCapture(self._config.audio, self._buffer)
+        self._config.input.audio.device = str(device_index) if device_index is not None else None
+        self._audio = AudioCapture(self._config.input.audio, self._buffer)
         self._audio.start()
         logger.info("Switched audio device to %s", device_index)
 
@@ -125,8 +125,8 @@ class DictationEngine(BaseDictationEngine):
         self._install_signal_handlers()
 
         print(
-            f"\nVocal ready \u2014 press {self._config.hotkey.key} "
-            f"({self._config.hotkey.mode} mode) to dictate.\n",
+            f"\nVocal ready \u2014 press {self._config.input.hotkey.key} "
+            f"({self._config.input.hotkey.mode} mode) to dictate.\n",
             flush=True,
         )
 
