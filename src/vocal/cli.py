@@ -557,6 +557,12 @@ def _run_with_tray(
         on_speech_start=on_speech_start,
         on_speech_end=on_speech_end,
     )
+    engine = _make_engine(initial_mode)
+    holder["engine"] = engine
+
+    # Start accepting /say only once the engine exists, so the very first
+    # utterance can suppress the mic too (engine construction loads the VAD
+    # model and takes a second or two).
     server = None
     if config.output.server.enabled:
         from vocal.output.server import SpeechServer
@@ -566,9 +572,6 @@ def _run_with_tray(
         except OSError as e:
             logger.error("Speech server failed to start: %s", e)
             server = None
-
-    engine = _make_engine(initial_mode)
-    holder["engine"] = engine
 
     _install_shutdown_handlers(request_shutdown)
 
