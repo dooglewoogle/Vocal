@@ -44,10 +44,10 @@ def server(tmp_path: Path):
     srv.stop()
 
 
-def _call(srv: SpeechServer, method: str, path: str, body: dict | None = None, token: str | None = "ok"):
+def _call(srv: SpeechServer, method: str, path: str, body: dict | list | None = None, origin: str | None = None):
     headers = {"Content-Type": "application/json"}
-    if token is not None:
-        headers["Authorization"] = f"Bearer {srv.token if token == 'ok' else token}"
+    if origin is not None:
+        headers["Origin"] = origin
     req = urllib.request.Request(
         f"http://127.0.0.1:{srv.port}{path}", method=method, headers=headers,
         data=json.dumps(body).encode() if body is not None else None,
@@ -62,18 +62,19 @@ def _call(srv: SpeechServer, method: str, path: str, body: dict | None = None, t
 def test_runtime_file_written_0600_and_removed(server) -> None:
     srv, _, rt = server
     info = read_runtime_info(rt)
-    assert info["port"] == srv.port and info["token"] == srv.token and info["pid"] == os.getpid()
+    assert info["port"] == srv.port and info["pid"] == os.getpid() and "token" not in info
     if os.name == "posix":
         assert (rt.stat().st_mode & 0o777) == 0o600
     srv.stop()
     assert not rt.exists()
 
 
-def test_unauthorized(server) -> None:
-    srv, _, _ = server
-    assert _call(srv, "GET", "/health", token=None)[0] == 401
-    assert _call(srv, "GET", "/health", token="wrong")[0] == 401
-    assert _call(srv, "POST", "/say", {"text": "x"}, token=None)[0] == 401
+def test_browser_origin_rejected(server) -> None:
+    srv, ctl, _ = server
+    assert _call(srv, "GET", "/health", origin="https://evil.example")[0] == 403
+    assert _call(srv, "POST", "/say", {"text": "x"}, origin="http://localhost:3000")[0] == 403
+    assert _call(srv, "POST", "/say", {"text": "x"}, origin="null")[0] == 403
+    assert ctl.said == []
 
 
 def test_health_and_status(server) -> None:
@@ -127,7 +128,7 @@ def test_client_without_daemon(tmp_path: Path) -> None:
     srv = SpeechServer(StubController(), port=0, runtime_file=stale)
     srv.start()
     srv.stop()
-    stale.write_text(json.dumps({"host": "127.0.0.1", "port": srv.port, "token": "t"}))
+    stale.write_text(json.dumps({"host": "127.0.0.1", "port": srv.port}))
     assert client.say("x", runtime_file=stale) is False
 
 

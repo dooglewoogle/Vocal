@@ -5,18 +5,19 @@
     GET  /status  -> {"speaking", "queue", "voice", "backend"}
     GET  /health  -> {"ok": true}
 
-Every request needs ``Authorization: Bearer <token>``. The token and the
-bound port are written to a 0600 runtime file so local clients (and
-``vocal say``) can find the daemon without configuration.
+The server binds to loopback only and needs no credentials. Requests that
+carry an ``Origin`` header are refused: browsers always add one to
+cross-origin requests, so this stops a web page from driving the speaker
+while leaving curl/scripts untouched. The bound port is written to a
+runtime file so local clients (and ``vocal say``) can find the daemon
+without configuration.
 """
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
-import secrets
 import sys
 import threading
 from http import HTTPStatus
@@ -50,7 +51,7 @@ def read_runtime_info(path: Path | None = None) -> dict | None:
         data = json.loads(p.read_text())
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict) or "port" not in data or "token" not in data:
+    if not isinstance(data, dict) or "port" not in data:
         return None
     return data
 
@@ -73,9 +74,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _authorized(self) -> bool:
-        header = self.headers.get("Authorization", "")
-        scheme, _, token = header.partition(" ")
-        return scheme.lower() == "bearer" and hmac.compare_digest(token.strip(), self.server.token)
+        # Browsers send Origin on every cross-origin request; curl and
+        # scripts don't. Refusing it blocks web pages, nothing else.
+        return self.headers.get("Origin") is None
 
     def _read_json(self) -> dict | None:
         length = int(self.headers.get("Content-Length") or 0)
@@ -97,7 +98,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if not self._authorized():
-            return self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return self._send(HTTPStatus.FORBIDDEN, {"error": "browser origins are not allowed"})
         ctl = self.server.controller
         if self.path == "/health":
             return self._send(HTTPStatus.OK, {"ok": True})
@@ -110,7 +111,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if not self._authorized():
-            return self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return self._send(HTTPStatus.FORBIDDEN, {"error": "browser origins are not allowed"})
         ctl = self.server.controller
         if self.path == "/stop":
             ctl.stop()
@@ -134,7 +135,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class SpeechServer(ThreadingHTTPServer):
-    """Threaded HTTP server bound to localhost; owns the runtime file."""
+    """Threaded HTTP server bound to loopback; owns the runtime file."""
 
     daemon_threads = True
     allow_reuse_address = True
@@ -147,7 +148,6 @@ class SpeechServer(ThreadingHTTPServer):
         runtime_file: Path | None = None,
     ) -> None:
         self.controller = controller
-        self.token = secrets.token_hex(16)
         self._runtime_file = runtime_file or runtime_file_path()
         self._thread: threading.Thread | None = None
         try:
@@ -184,7 +184,7 @@ class SpeechServer(ThreadingHTTPServer):
 
     def _write_runtime_file(self) -> None:
         self._runtime_file.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"host": self.host, "port": self.port, "token": self.token, "pid": os.getpid()})
+        payload = json.dumps({"host": self.host, "port": self.port, "pid": os.getpid()})
         tmp = self._runtime_file.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:

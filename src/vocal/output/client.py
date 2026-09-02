@@ -25,10 +25,8 @@ def _request(method: str, path: str, body: dict | None = None, timeout: float = 
         return None
     url = f"http://{info.get('host', '127.0.0.1')}:{info['port']}{path}"
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers={
-        "Authorization": f"Bearer {info['token']}",
-        "Content-Type": "application/json",
-    })
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read() or b"{}")

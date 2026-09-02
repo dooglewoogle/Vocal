@@ -164,7 +164,7 @@ Text is split at sentence boundaries and synthesized sentence-by-sentence, so lo
 
 ### HTTP hook (for other processes)
 
-While the daemon runs it listens on `127.0.0.1:47821` (or an ephemeral port if that's taken). The port and a per-run bearer token live in a `0600` runtime file:
+While the daemon runs it listens on `127.0.0.1:47821` (or an ephemeral port if that's taken). No credentials — it is loopback-only. The actual port is in a runtime file so scripts don't have to hard-code it:
 
 - Linux: `$XDG_RUNTIME_DIR/vocal/server.json`
 - macOS: `~/Library/Application Support/vocal/server.json`
@@ -172,12 +172,12 @@ While the daemon runs it listens on `127.0.0.1:47821` (or an ephemeral port if t
 - override: `$VOCAL_RUNTIME_FILE`
 
 ```bash
-RT=${XDG_RUNTIME_DIR}/vocal/server.json
-PORT=$(jq -r .port "$RT"); TOKEN=$(jq -r .token "$RT")
-
-curl -s -X POST "http://127.0.0.1:$PORT/say" \
-     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+curl -s -X POST http://127.0.0.1:47821/say \
+     -H 'Content-Type: application/json' \
      -d '{"text": "Deploy complete.", "interrupt": false}'
+
+# or read the port from the runtime file
+PORT=$(jq -r .port "$XDG_RUNTIME_DIR/vocal/server.json")
 ```
 
 | Route | Body | Response |
@@ -187,7 +187,7 @@ curl -s -X POST "http://127.0.0.1:$PORT/say" \
 | `GET /status` | — | `{"speaking", "queue", "voice", "backend"}` |
 | `GET /health` | — | `{"ok": true}` |
 
-Missing or wrong token → `401`. Disable the server with `--no-server` or `[output.server] enabled = false`.
+Requests carrying an `Origin` header get `403`: browsers add one to every cross-origin request, so a web page can't drive your speaker, while curl and scripts (which send none) are unaffected. Disable the server with `--no-server` or `[output.server] enabled = false`.
 
 ### What happens to dictation while speaking
 
