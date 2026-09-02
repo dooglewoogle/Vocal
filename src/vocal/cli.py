@@ -414,6 +414,10 @@ def _run_with_tray(
                 config, phrasebook, args.phrasebook, args.phrasebook_replace,
                 on_state_change=tray.set_state,
                 on_shutdown_requested=request_shutdown,
+                # Pressing the hotkey while speech plays cuts the speech first,
+                # synchronously, so the mic never records it and hotkey-mode
+                # ducking never fights active playback.
+                on_before_record=lambda: speech.stop(),
             )
 
     # ── Tray callbacks ──────────────────────────────────────────────
@@ -488,12 +492,71 @@ def _run_with_tray(
         on_select_model=on_select_model,
         on_switch_mode=on_switch_mode,
         on_open_phrasebook=on_open_phrasebook,
+        on_select_voice=lambda v: speech.set_voice(v),
+        on_stop_speaking=lambda: speech.stop(),
         current_model=config.input.model.size,
         current_mode=initial_mode,
         current_device=resolve_device(config.input.audio.device),
+        current_voice=config.output.speech.voice,
     )
 
-    speech = SpeechController(config.output.speech)
+    # ── Speech output ↔ input coupling ──────────────────────────────
+    # While speaking: suppress the mic (so live mode doesn't transcribe the
+    # speaker) and duck other apps' streams (not ours — StreamDucker is
+    # per-stream; the master-volume Ducker would silence the speech too).
+
+    speech_cfg = config.output.speech
+    stream_ducker = None
+    if speech_cfg.duck:
+        from vocal.volume import StreamDucker
+        if StreamDucker.available():
+            stream_ducker = StreamDucker(speech_cfg.duck_amount)
+        else:
+            logger.warning("output.speech.duck requested but per-stream ducking needs pactl; ignoring")
+
+    release_timer: list[threading.Timer | None] = [None]
+
+    def _cancel_release() -> None:
+        t = release_timer[0]
+        if t is not None:
+            t.cancel()
+            release_timer[0] = None
+
+    def _release_input() -> None:
+        release_timer[0] = None
+        engine = holder.get("engine")
+        release = getattr(engine, "release_input", None)
+        if callable(release):
+            release()
+
+    def on_speech_start() -> None:
+        _cancel_release()
+        if speech_cfg.pause_input:
+            engine = holder.get("engine")
+            suppress = getattr(engine, "suppress_input", None)
+            if callable(suppress):
+                suppress()
+        if stream_ducker is not None:
+            # pactl round-trips take tens of ms; keep them off the audio path.
+            threading.Thread(target=stream_ducker.duck, name="stream-duck", daemon=True).start()
+        tray.set_speaking(True)
+
+    def on_speech_end() -> None:
+        if stream_ducker is not None:
+            threading.Thread(target=stream_ducker.restore, name="stream-restore", daemon=True).start()
+        tray.set_speaking(False)
+        if speech_cfg.pause_input:
+            _cancel_release()
+            t = threading.Timer(speech_cfg.pause_input_tail_ms / 1000.0, _release_input)
+            t.daemon = True
+            release_timer[0] = t
+            t.start()
+
+    speech = SpeechController(
+        speech_cfg,
+        on_speech_start=on_speech_start,
+        on_speech_end=on_speech_end,
+    )
     server = None
     if config.output.server.enabled:
         from vocal.output.server import SpeechServer
@@ -516,6 +579,9 @@ def _run_with_tray(
         if server is not None:
             server.stop()
         speech.shutdown()
+        _cancel_release()
+        if stream_ducker is not None:
+            stream_ducker.restore()
         engine.shutdown()
         logger.info("Engine shutdown complete")
 

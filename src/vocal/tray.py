@@ -92,9 +92,12 @@ class TrayIcon:
         on_select_model: Callable[[str], None],
         on_switch_mode: Callable[[str], None],
         on_open_phrasebook: Callable[[], None],
+        on_select_voice: Callable[[str], None] | None = None,
+        on_stop_speaking: Callable[[], None] | None = None,
         current_model: str = "small.en",
         current_mode: str = "live",
         current_device: int | None = None,
+        current_voice: str | None = None,
     ) -> None:
         self._on_toggle_pause = on_toggle_pause
         self._on_quit = on_quit
@@ -102,13 +105,19 @@ class TrayIcon:
         self._on_select_model = on_select_model
         self._on_switch_mode = on_switch_mode
         self._on_open_phrasebook = on_open_phrasebook
+        self._on_select_voice = on_select_voice
+        self._on_stop_speaking = on_stop_speaking
 
         self._state: DictationState = DictationState.LISTENING
         self._state_lock = threading.Lock()
+        # Speech output is an overlay, independent of the dictation state:
+        # we can be Listening *and* Speaking.
+        self._speaking = False
 
         self._current_device: int | None = current_device
         self._current_model: str = current_model
         self._current_mode: str = current_mode
+        self._current_voice: str | None = current_voice
 
         self._images: dict[DictationState, object] = {}
         self._icon: "pystray.Icon | None" = None
@@ -123,13 +132,31 @@ class TrayIcon:
                 return
             self._state = state
 
+        self._refresh_icon()
+
+    def set_speaking(self, speaking: bool) -> None:
+        """Show/hide the speaking overlay (busy icon + title suffix). Any thread."""
+        with self._state_lock:
+            if self._speaking == speaking:
+                return
+            self._speaking = speaking
+        self._refresh_icon()
+
+    def _title(self) -> str:
+        with self._state_lock:
+            label = _STATE_LABEL[self._state]
+            speaking = self._speaking
+        return f"{APP_TITLE} — {'Speaking · ' if speaking else ''}{label}"
+
+    def _refresh_icon(self) -> None:
         icon = self._icon
         if icon is None:
             return  # run() hasn't been called yet; initial state picked up on start
-
+        with self._state_lock:
+            state = DictationState.TRANSCRIBING if self._speaking else self._state
         try:
             icon.icon = self._image_for(state)
-            icon.title = f"{APP_TITLE} — {_STATE_LABEL[state]}"
+            icon.title = self._title()
             icon.update_menu()
         except Exception:
             logger.exception("Failed to update tray for state %s", state.value)
@@ -153,7 +180,7 @@ class TrayIcon:
         self._icon = pystray.Icon(
             APP_NAME,
             icon=self._image_for(initial_state),
-            title=f"{APP_TITLE} — {_STATE_LABEL[initial_state]}",
+            title=self._title(),
             menu=self._build_menu(),
         )
         logger.info("Tray icon starting (initial state: %s)", initial_state.value)
@@ -235,6 +262,16 @@ class TrayIcon:
             logger.exception("mode switch callback raised")
         self._update_menu()
 
+    def _select_voice(self, voice: str) -> None:
+        if self._current_voice == voice or self._on_select_voice is None:
+            return
+        self._current_voice = voice
+        try:
+            self._on_select_voice(voice)
+        except Exception:
+            logger.exception("voice selection callback raised")
+        self._rebuild_menu()  # download marks may change
+
     # ── Menu construction ───────────────────────────────────────────
 
     def _build_menu(self) -> "pystray.Menu":
@@ -242,7 +279,8 @@ class TrayIcon:
 
         # ── Status (read-only) ──────────────────────────────────────
         def status_text(_item: object) -> str:
-            return f"Status: {_STATE_LABEL[self._current_state()]}"
+            label = _STATE_LABEL[self._current_state()]
+            return f"Status: {'Speaking · ' if self._speaking else ''}{label}"
 
         # ── Pause / Resume ──────────────────────────────────────────
         def pause_text(_item: object) -> str:
@@ -331,6 +369,56 @@ class TrayIcon:
             ),
         ]
 
+        # ── Voice submenu (text-to-speech) ──────────────────────────
+        def _voice_action(v: str) -> Callable:
+            def _cb(_icon: object, _item: object) -> None:
+                self._select_voice(v)
+            return _cb
+
+        def _voice_checked(v: str) -> Callable:
+            def _cb(_item: object) -> bool:
+                return self._current_voice == v
+            return _cb
+
+        voice_items: list = []
+        if self._on_select_voice is not None:
+            from vocal.output.models import VOICES, is_downloaded
+
+            by_backend: dict[str, list] = {}
+            for spec in VOICES.values():
+                by_backend.setdefault(spec.backend, []).append(spec)
+            for backend, specs in by_backend.items():
+                if voice_items:
+                    voice_items.append(pystray.Menu.SEPARATOR)
+                voice_items.append(pystray.MenuItem(backend.capitalize(), None, enabled=False))
+                for spec in specs:
+                    label = spec.name if is_downloaded(spec) else f"{spec.name}  (not downloaded)"
+                    voice_items.append(pystray.MenuItem(
+                        label,
+                        _voice_action(spec.name),
+                        checked=_voice_checked(spec.name),
+                        radio=True,
+                    ))
+
+        def on_stop_speaking_clicked(_icon: object, _item: object) -> None:
+            if self._on_stop_speaking is None:
+                return
+            try:
+                self._on_stop_speaking()
+            except Exception:
+                logger.exception("stop speaking callback raised")
+
+        speech_items: list = []
+        if voice_items:
+            speech_items.append(pystray.MenuItem("Voice", pystray.Menu(*voice_items)))
+        if self._on_stop_speaking is not None:
+            speech_items.append(pystray.MenuItem(
+                "Stop speaking", on_stop_speaking_clicked,
+                enabled=lambda _item: self._speaking,
+            ))
+        if speech_items:
+            speech_items.append(pystray.Menu.SEPARATOR)
+
         # ── Quit ────────────────────────────────────────────────────
         def on_quit_clicked(_icon: object, _item: object) -> None:
             try:
@@ -347,6 +435,7 @@ class TrayIcon:
             pystray.MenuItem("Model", pystray.Menu(*model_items)),
             pystray.MenuItem("Mode", pystray.Menu(*mode_items)),
             pystray.Menu.SEPARATOR,
+            *speech_items,
             pystray.MenuItem(
                 "Edit Phrasebook",
                 lambda _icon, _item: self._on_open_phrasebook(),
