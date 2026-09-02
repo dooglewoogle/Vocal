@@ -31,3 +31,46 @@ def _args(**kw) -> argparse.Namespace:
 )
 def test_resolve_initial_mode(kw, expected):
     assert _resolve_initial_mode(_args(**kw)) == expected
+
+
+# ── argument parsing: subcommands vs. legacy flat flags ──
+
+from vocal.cli import parse_args  # noqa: E402
+
+
+def test_no_subcommand_keeps_legacy_flags():
+    a = parse_args(["--hotkey", "--duck", "--model", "tiny.en", "--no-server"])
+    assert a.command is None
+    assert a.hotkey is True and a.duck is True and a.model == "tiny.en" and a.no_server is True
+
+
+def test_no_args_is_daemon():
+    a = parse_args([])
+    assert a.command is None and a.live is False and a.hotkey is False
+
+
+def test_say_parsing():
+    a = parse_args(["say", "-i", "--voice", "system", "hello", "there"])
+    assert a.command == "say" and a.interrupt is True and a.voice == "system"
+    assert a.text == ["hello", "there"]
+    assert parse_args(["say"]).text == []
+    assert parse_args(["say", "-"]).text == ["-"]
+
+
+def test_root_config_flag_before_subcommand():
+    a = parse_args(["--config", "/tmp/x.toml", "say", "hi"])
+    assert a.config == "/tmp/x.toml" and a.command == "say"
+
+
+def test_models_parsing():
+    assert parse_args(["models"]).models_command == "list"
+    assert parse_args(["models", "list"]).models_command == "list"
+    a = parse_args(["models", "download", "piper-en-amy-low"])
+    assert a.models_command == "download" and a.name == "piper-en-amy-low"
+    a = parse_args(["models", "remove", "x"])
+    assert a.models_command == "remove" and a.name == "x"
+
+
+def test_stop_status_parsing():
+    assert parse_args(["stop"]).command == "stop"
+    assert parse_args(["status"]).command == "status"

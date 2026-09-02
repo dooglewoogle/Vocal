@@ -1,14 +1,23 @@
-"""CLI entry point for Vocal."""
+"""CLI entry point for Vocal.
+
+    vocal [flags]                 run the daemon (dictation + speech server, tray)
+    vocal say [--interrupt] TEXT  speak text via the daemon, or in-process if none
+    vocal stop                    stop speaking
+    vocal status                  daemon speech status
+    vocal models list|download|remove
+"""
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import signal
 import subprocess
 import sys
 import threading
 from collections.abc import Callable
+from pathlib import Path
 
 from vocal.config import CONFIG_DIR, CONFIG_PATH, ConfigError, VocalConfig, load_config
 from vocal.state import DictationState
@@ -23,11 +32,16 @@ from vocal.utils import (
 logger = logging.getLogger(__name__)
 
 
-def parse_args() -> argparse.Namespace:
+# ── Argument parsing ────────────────────────────────────────────────
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vocal",
-        description="Local CPU-only dictation — speak and text appears in the active window.",
+        description="Local CPU-only dictation and speech — speak and text appears in the "
+                    "active window; send text and it is read aloud.",
     )
+    # ── Input (dictation) flags — all valid without a subcommand ──
     parser.add_argument(
         "--model", type=str, default=None,
         help="Whisper model size (tiny.en, base.en, small.en, medium.en)",
@@ -111,11 +125,52 @@ def parse_args() -> argparse.Namespace:
         "--benchmark-mic", action="store_true",
         help="Use live mic input for benchmark instead of synthetic audio",
     )
-    return parser.parse_args()
+    # ── Output (speech) flags ──
+    parser.add_argument(
+        "--no-server", action="store_true",
+        help="Do not start the localhost speech server",
+    )
+    parser.add_argument(
+        "--voice", type=str, default=None,
+        help="TTS voice name (see `vocal models list`)",
+    )
+    parser.add_argument(
+        "--tts-backend", type=str, choices=["piper", "kokoro", "system"], default=None,
+        help="TTS backend used with output.speech.model_path",
+    )
+
+    # ── Subcommands ──
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+    parser.set_defaults(command=None)
+
+    say = sub.add_parser("say", help="Speak text (via the running daemon, or in-process)")
+    say.add_argument("text", nargs="*", help="Text to speak; omit or use '-' to read stdin")
+    say.add_argument("--interrupt", "-i", action="store_true", help="Cut off current speech first")
+    say.add_argument("--voice", type=str, default=None, help="Voice name for this utterance")
+
+    sub.add_parser("stop", help="Stop speaking and clear the queue")
+    sub.add_parser("status", help="Show daemon speech status")
+
+    models = sub.add_parser("models", help="Manage TTS voice models")
+    msub = models.add_subparsers(dest="models_command", metavar="ACTION")
+    models.set_defaults(models_command="list")
+    msub.add_parser("list", help="List known voices and whether they are downloaded")
+    dl = msub.add_parser("download", help="Download a voice")
+    dl.add_argument("name")
+    rm = msub.add_parser("remove", help="Delete a downloaded voice")
+    rm.add_argument("name")
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+# ── Helpers ─────────────────────────────────────────────────────────
 
 
 def list_audio_devices() -> None:
-    """Print available audio input devices."""
+    """Print available audio input and output devices."""
     import sounddevice as sd
 
     print("Available audio input devices:\n")
@@ -124,7 +179,29 @@ def list_audio_devices() -> None:
             default = " (default)" if i == sd.default.device[0] else ""
             print(f"  [{i}] {dev['name']}{default}")
             print(f"       channels={dev['max_input_channels']}, rate={dev['default_samplerate']}")
+    print("\nAvailable audio output devices:\n")
+    for i, dev in enumerate(sd.query_devices()):
+        if dev["max_output_channels"] > 0:
+            default = " (default)" if i == sd.default.device[1] else ""
+            print(f"  [{i}] {dev['name']}{default}")
+            print(f"       channels={dev['max_output_channels']}, rate={dev['default_samplerate']}")
     print()
+
+
+def _load_config_or_exit(args: argparse.Namespace) -> VocalConfig:
+    config_path = Path(args.config) if args.config else None
+    try:
+        config = load_config(config_path)
+    except ConfigError as e:
+        print(f"Config error: {e}", file=sys.stderr)
+        sys.exit(1)
+    if getattr(args, "voice", None):
+        config.output.speech.voice = args.voice
+    if getattr(args, "tts_backend", None):
+        config.output.speech.backend = args.tts_backend
+    if getattr(args, "no_server", False):
+        config.output.server.enabled = False
+    return config
 
 
 def _install_shutdown_handlers(on_shutdown: Callable[[], None]) -> None:
@@ -203,14 +280,107 @@ def _resolve_initial_mode(args: argparse.Namespace) -> str:
     return "live"
 
 
+# ── Speech subcommands ──────────────────────────────────────────────
+
+
+def _say_text(args: argparse.Namespace) -> str:
+    if not args.text or args.text == ["-"]:
+        return sys.stdin.read()
+    return " ".join(args.text)
+
+
+def _cmd_say(args: argparse.Namespace) -> int:
+    from vocal.output import client
+
+    text = _say_text(args).strip()
+    if not text:
+        print("Nothing to say.", file=sys.stderr)
+        return 1
+    try:
+        if client.say(text, interrupt=args.interrupt, voice=args.voice):
+            return 0
+    except client.DaemonError as e:
+        print(f"Daemon rejected request: {e}", file=sys.stderr)
+        return 1
+
+    # No daemon — synthesize in this process.
+    from vocal.output.speech import SpeechController
+
+    config = _load_config_or_exit(args)
+    setup_logging(args.log_level or "WARNING")
+    logger.info("No vocal daemon running; speaking in-process")
+    controller = SpeechController(config.output.speech)
+    try:
+        controller.say(text)
+        controller.wait()
+    except KeyboardInterrupt:
+        controller.stop()
+    finally:
+        controller.shutdown()
+    return 0
+
+
+def _cmd_stop(_args: argparse.Namespace) -> int:
+    from vocal.output import client
+
+    if client.stop():
+        return 0
+    print("No vocal daemon running.", file=sys.stderr)
+    return 1
+
+
+def _cmd_status(_args: argparse.Namespace) -> int:
+    from vocal.output import client
+
+    info = client.status()
+    if info is None:
+        print("No vocal daemon running.", file=sys.stderr)
+        return 1
+    print(json.dumps(info, indent=2))
+    return 0
+
+
+def _cmd_models(args: argparse.Namespace) -> int:
+    from vocal.output.models import (
+        VOICES,
+        VoiceNotFoundError,
+        download_voice,
+        is_downloaded,
+        models_dir,
+        remove_voice,
+    )
+
+    action = args.models_command
+    try:
+        if action == "list":
+            print(f"Models directory: {models_dir()}\n")
+            width = max(len(n) for n in VOICES)
+            for name, spec in VOICES.items():
+                mark = "✓" if is_downloaded(spec) else " "
+                print(f"  [{mark}] {name:<{width}}  {spec.backend:<7} {spec.description}")
+            print("\n[✓] = downloaded. Fetch with: vocal models download NAME")
+        elif action == "download":
+            download_voice(args.name, progress=print)
+        elif action == "remove":
+            print("Removed." if remove_voice(args.name) else "Nothing to remove.")
+    except VoiceNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+# ── Daemon ──────────────────────────────────────────────────────────
+
+
 def _run_with_tray(
     config: VocalConfig,
     args: argparse.Namespace,
     phrasebook: Phrasebook | None,
 ) -> None:
-    """Main-thread flow: construct tray + engine, wire shutdown, run."""
+    """Main-thread flow: construct tray + engine + speech, wire shutdown, run."""
     from vocal.input.audio import resolve_device
     from vocal.input.base_engine import BaseDictationEngine
+    from vocal.output.speech import SpeechController
     from vocal.tray import TrayIcon
 
     shutdown_started = threading.Event()
@@ -303,7 +473,7 @@ def _run_with_tray(
             import os
             os.startfile(str(PHRASEBOOK_PATH))  # type: ignore[attr-defined]
 
-    # ── Build tray + engine ─────────────────────────────────────────
+    # ── Build tray + engine + speech ────────────────────────────────
 
     initial_mode = _resolve_initial_mode(args)
     if initial_mode == "hotkey":
@@ -323,6 +493,17 @@ def _run_with_tray(
         current_device=resolve_device(config.input.audio.device),
     )
 
+    speech = SpeechController(config.output.speech)
+    server = None
+    if config.output.server.enabled:
+        from vocal.output.server import SpeechServer
+        try:
+            server = SpeechServer(speech, config.output.server.host, config.output.server.port)
+            server.start()
+        except OSError as e:
+            logger.error("Speech server failed to start: %s", e)
+            server = None
+
     engine = _make_engine(initial_mode)
     holder["engine"] = engine
 
@@ -332,12 +513,24 @@ def _run_with_tray(
     try:
         tray.run()  # blocks main; returns when tray.stop() is called
     finally:
+        if server is not None:
+            server.stop()
+        speech.shutdown()
         engine.shutdown()
         logger.info("Engine shutdown complete")
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.command == "say":
+        sys.exit(_cmd_say(args))
+    if args.command == "stop":
+        sys.exit(_cmd_stop(args))
+    if args.command == "status":
+        sys.exit(_cmd_status(args))
+    if args.command == "models":
+        sys.exit(_cmd_models(args))
 
     if args.list_devices:
         list_audio_devices()
@@ -352,14 +545,7 @@ def main() -> None:
         )
         return
 
-    # Load config
-    from pathlib import Path
-    config_path = Path(args.config) if args.config else None
-    try:
-        config = load_config(config_path)
-    except ConfigError as e:
-        print(f"Config error: {e}", file=sys.stderr)
-        sys.exit(1)
+    config = _load_config_or_exit(args)
 
     # Apply CLI overrides
     if args.model:

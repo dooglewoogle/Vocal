@@ -62,6 +62,8 @@ class SpeechController:
         self._idle = threading.Event()
         self._idle.set()
         self._voice_lock = threading.Lock()
+        self._state_lock = threading.Lock()  # guards _busy / _idle vs queue
+        self._busy = False  # worker is processing an utterance
         self._thread: threading.Thread | None = None
         self._shutdown = False
 
@@ -102,7 +104,9 @@ class SpeechController:
         if interrupt:
             self.stop()
         self.start()
-        self._queue.put(Utterance(text, voice))
+        with self._state_lock:
+            self._idle.clear()
+            self._queue.put(Utterance(text, voice))
 
     def stop(self) -> None:
         """Flush the queue and halt playback. Blocks until the worker is idle
@@ -110,8 +114,15 @@ class SpeechController:
         self._drain_queue()
         self._abort.set()
         self._player.abort()
+        with self._state_lock:
+            if not self._busy and self._queue.empty():
+                self._idle.set()
         if threading.current_thread() is not self._thread:
             self._idle.wait(timeout=5.0)
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Block until everything queued has been spoken (or stopped)."""
+        return self._idle.wait(timeout)
 
     def set_voice(self, name: str) -> None:
         """Switch voice (downloading if needed) on the worker thread."""
@@ -146,7 +157,8 @@ class SpeechController:
             item = self._queue.get()
             if item is None:
                 break
-            self._idle.clear()
+            with self._state_lock:
+                self._busy = True
             self._abort.clear()
             try:
                 self._speak(item)
@@ -155,8 +167,12 @@ class SpeechController:
             finally:
                 if self._queue.empty():
                     self._end_run()
-                self._idle.set()
+                with self._state_lock:
+                    self._busy = False
+                    if self._queue.empty():
+                        self._idle.set()
         self._end_run()
+        self._idle.set()
 
     def _begin_run(self) -> None:
         if not self._speaking.is_set():
