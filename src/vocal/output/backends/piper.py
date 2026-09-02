@@ -7,6 +7,7 @@ sit alongside) or a directory containing exactly one such pair.
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -46,7 +47,8 @@ class PiperBackend(TTSBackend):
 
         logger.info("Loading Piper voice %s", onnx.name)
         self._voice = PiperVoice.load(str(onnx), config_path=str(config))
-        self._sample_rate = int(self._voice.config.sample_rate)
+        with open(config, encoding="utf-8") as f:
+            self._sample_rate = int(json.load(f)["audio"]["sample_rate"])
         self._loaded = True
 
     def synthesize(self, text: str) -> Synthesis:
