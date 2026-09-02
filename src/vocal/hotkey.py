@@ -215,7 +215,16 @@ def _auto_detect_backend() -> str:
             import evdev  # noqa: F401
             return "evdev"
         except ImportError:
-            logger.info("evdev not available, falling back to pynput")
+            from vocal.utils import is_wayland
+
+            if is_wayland():
+                logger.warning(
+                    "evdev not available and pynput does not support Wayland "
+                    "keyboard capture — install python-evdev "
+                    "(pip install evdev) and add your user to the 'input' group"
+                )
+            else:
+                logger.info("evdev not available, falling back to pynput")
             return "pynput"
     # macOS, Windows — pynput is the cross-platform option
     return "pynput"
@@ -235,6 +244,13 @@ def create_listener(
     if backend == "evdev":
         return EvdevHotkeyListener(config, on_start, on_stop)
     elif backend == "pynput":
+        from vocal.utils import is_wayland
+
+        if is_wayland():
+            logger.warning(
+                "pynput does not support Wayland keyboard capture; "
+                "hotkeys will likely not work — consider backend = \"evdev\""
+            )
         return PynputHotkeyListener(config, on_start, on_stop)
     else:
         raise ValueError(f"Unknown hotkey backend: {config.backend!r}")

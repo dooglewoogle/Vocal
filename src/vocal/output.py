@@ -8,6 +8,7 @@ import sys
 import time
 
 from vocal.config import OutputConfig
+from vocal.utils import is_wayland
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,47 @@ def _inject_xdotool_linux(text: str, delay_ms: int = 8) -> None:
     """Inject text by simulating keystrokes with xdotool (Linux/X11)."""
     _run(
         ["xdotool", "type", "--clearmodifiers", "--delay", str(delay_ms), "--", text],
+        timeout=30.0,
+    )
+
+
+# ── Linux / Wayland (wl-clipboard + wtype) ────────────────────────
+
+
+def _inject_clipboard_wayland(text: str) -> None:
+    """Inject text by copying to clipboard and pasting with Ctrl+V (Wayland)."""
+    # 1. Save current clipboard
+    old_clipboard = None
+    try:
+        result = _run(["wl-paste", "--no-newline"], timeout=1.0)
+        if result.returncode == 0:
+            old_clipboard = result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # 2. Set clipboard to our text
+    proc = subprocess.Popen(["wl-copy"], stdin=subprocess.PIPE)
+    proc.communicate(text.encode("utf-8"))
+    if proc.returncode != 0:
+        logger.warning("wl-copy set failed (rc=%d)", proc.returncode)
+        return
+
+    # 3. Paste
+    _run(["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"], timeout=2.0)
+
+    # 4. Restore clipboard after a short delay
+    if old_clipboard is not None:
+        time.sleep(0.1)
+        proc = subprocess.Popen(["wl-copy"], stdin=subprocess.PIPE)
+        proc.communicate(old_clipboard)
+        if proc.returncode != 0:
+            logger.warning("wl-copy restore failed (rc=%d)", proc.returncode)
+
+
+def _inject_wtype_wayland(text: str, delay_ms: int = 8) -> None:
+    """Inject text by simulating keystrokes with wtype (Wayland)."""
+    _run(
+        ["wtype", "-d", str(delay_ms), "--", text],
         timeout=30.0,
     )
 
@@ -166,13 +208,21 @@ def inject_text(text: str, config: OutputConfig) -> None:
     if not text:
         return
 
-    logger.debug("Injecting %d chars via %s on %s", len(text), config.method, sys.platform)
+    wayland = is_wayland()
+    server = "wayland" if wayland else sys.platform
+    logger.debug("Injecting %d chars via %s on %s", len(text), config.method, server)
 
     if config.method == "clipboard":
-        fn = _CLIPBOARD_DISPATCH.get(sys.platform, _inject_clipboard_linux)
-        fn(text)
+        if wayland:
+            _inject_clipboard_wayland(text)
+        else:
+            fn = _CLIPBOARD_DISPATCH.get(sys.platform, _inject_clipboard_linux)
+            fn(text)
     elif config.method == "xdotool":
-        fn_xdo = _XDOTOOL_DISPATCH.get(sys.platform, _inject_xdotool_linux)
-        fn_xdo(text, delay_ms=config.xdotool_delay)
+        if wayland:
+            _inject_wtype_wayland(text, delay_ms=config.xdotool_delay)
+        else:
+            fn_xdo = _XDOTOOL_DISPATCH.get(sys.platform, _inject_xdotool_linux)
+            fn_xdo(text, delay_ms=config.xdotool_delay)
     else:
         logger.error("Unknown output method: %s", config.method)

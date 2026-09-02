@@ -101,6 +101,8 @@ def log_startup_banner(log_path: Path | None) -> None:
     log.info("-" * 60)
     log.info("vocal %s starting", __version__)
     log.info("python %s on %s", sys.version.split()[0], _platform.platform())
+    if sys.platform == "linux":
+        log.info("display server: %s", "wayland" if is_wayland() else "x11")
     if log_path is not None:
         log.info("log file: %s", log_path)
     else:
@@ -108,15 +110,39 @@ def log_startup_banner(log_path: Path | None) -> None:
     log.info("-" * 60)
 
 
+def is_wayland() -> bool:
+    """Detect whether the current session is running under a Wayland compositor.
+
+    Checks ``$XDG_SESSION_TYPE`` first (most reliable), then falls back to
+    ``$WAYLAND_DISPLAY`` (set by most compositors even without systemd).
+    """
+    if sys.platform != "linux":
+        return False
+    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland":
+        return True
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    return False
+
+
 def check_dependencies(output_method: str = "clipboard") -> list[str]:
     """Check for required system dependencies. Returns list of missing ones."""
     missing = []
 
     if sys.platform == "linux":
-        if shutil.which("xdotool") is None:
-            missing.append("xdotool")
-        if output_method == "clipboard" and shutil.which("xclip") is None:
-            missing.append("xclip")
+        if is_wayland():
+            # Wayland: wtype for keystroke simulation, wl-clipboard for clipboard
+            if shutil.which("wtype") is None:
+                missing.append("wtype")
+            if output_method == "clipboard":
+                if shutil.which("wl-copy") is None or shutil.which("wl-paste") is None:
+                    missing.append("wl-clipboard")
+        else:
+            # X11: xdotool for keystroke simulation, xclip for clipboard
+            if shutil.which("xdotool") is None:
+                missing.append("xdotool")
+            if output_method == "clipboard" and shutil.which("xclip") is None:
+                missing.append("xclip")
     elif sys.platform == "darwin":
         if shutil.which("pbcopy") is None:
             missing.append("pbcopy (should be built into macOS)")
