@@ -62,6 +62,19 @@ class BaseDictationEngine(ABC):
         self._state: DictationState = DictationState.LISTENING
         self._state_lock = threading.Lock()
 
+    # ── Input suppression (used while text-to-speech is playing) ────
+
+    def suppress_input(self) -> None:
+        """Stop consuming microphone audio until :meth:`release_input`.
+
+        Separate from any user-facing pause so releasing never un-pauses
+        something the user paused deliberately. Default: no-op (hotkey mode
+        only records on demand, so there is nothing to suppress).
+        """
+
+    def release_input(self) -> None:
+        """Undo :meth:`suppress_input`. Default: no-op."""
+
     # ── State management ────────────────────────────────────────────
 
     def _set_state(self, state: DictationState) -> None:

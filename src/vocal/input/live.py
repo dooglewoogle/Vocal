@@ -65,6 +65,7 @@ class LiveDictationEngine(BaseDictationEngine):
         # recording" action pauses live listening, and "stop recording"
         # resumes it.  In PTT mode this means hold-to-mute.
         self._paused = threading.Event()  # set = paused
+        self._suppressed = threading.Event()  # set = TTS playing; drop mic audio
         self._listener = create_listener(
             config.input.hotkey,
             on_start=self._on_pause,
@@ -100,6 +101,27 @@ class LiveDictationEngine(BaseDictationEngine):
         self._set_state(DictationState.LISTENING)
         print("\u25b6  Listening...", flush=True)
 
+    # ── Input suppression while speech output plays ────────────────
+
+    def suppress_input(self) -> None:
+        if self._suppressed.is_set():
+            return
+        self._suppressed.set()
+        # Don't let an utterance that was mid-flight absorb the tail of the
+        # speaker audio; finish it now with what we have.
+        if self._in_speech:
+            self._flush_utterance()
+        logger.debug("Input suppressed (speech output active)")
+
+    def release_input(self) -> None:
+        if not self._suppressed.is_set():
+            return
+        self._vad.reset()
+        self._detector.reset()
+        self._preroll.clear()
+        self._suppressed.clear()
+        logger.debug("Input released")
+
     # ── Audio callback ──────────────────────────────────────────────
 
     def _audio_callback(
@@ -112,7 +134,7 @@ class LiveDictationEngine(BaseDictationEngine):
         """Sounddevice callback — RT thread. Must be fast."""
         if status:
             logger.warning("Audio status: %s", status)
-        if self._paused.is_set():
+        if self._paused.is_set() or self._suppressed.is_set():
             return
         chunk = indata[:, 0].copy()
         try:

@@ -30,12 +30,17 @@ class DictationEngine(BaseDictationEngine):
         phrasebook_replace: bool = False,
         on_state_change: Callable[[DictationState], None] | None = None,
         on_shutdown_requested: Callable[[], None] | None = None,
+        on_before_record: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(
             config, phrasebook, phrasebook_seed, phrasebook_replace,
             on_state_change=on_state_change,
             on_shutdown_requested=on_shutdown_requested,
         )
+        #: Runs synchronously before each recording starts — the daemon uses
+        #: it to cut off text-to-speech so the mic doesn't capture it and so
+        #: ducking never races against active playback.
+        self._on_before_record = on_before_record
 
         # Audio
         self._buffer = AudioBuffer(sample_rate=config.input.audio.sample_rate)
@@ -61,6 +66,11 @@ class DictationEngine(BaseDictationEngine):
 
     def _on_recording_start(self) -> None:
         """Called by hotkey listener when recording should begin."""
+        if self._on_before_record is not None:
+            try:
+                self._on_before_record()
+            except Exception:
+                logger.exception("on_before_record hook raised")
         with self._state_lock:
             if self._state != DictationState.LISTENING:
                 logger.warning("Cannot start recording in state %s", self._state.value)

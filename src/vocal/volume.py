@@ -11,12 +11,14 @@ Backends shell out to whatever volume CLI is available:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -282,3 +284,88 @@ class Ducker:
                 logger.debug("Restored volume to %d%%", target)
                 self._saved = None
                 self._ducked_level = None
+
+
+# ── Per-stream ducking (PulseAudio / PipeWire via pactl) ────────────
+
+_SINK_INPUT_RE = re.compile(r"^Sink Input #(\d+)", re.MULTILINE)
+_PCT_RE = re.compile(r"(\d+)%")
+_PID_RE = re.compile(r'application\.process\.id = "(\d+)"')
+
+
+class StreamDucker:
+    """Lower every *other* application's playback stream, leaving this
+    process's own streams (e.g. text-to-speech output) at full volume.
+
+    :class:`Ducker` moves the master sink, which would also quieten the
+    speech we are trying to make audible. ``pactl set-sink-input-volume``
+    is per-stream, so we can exclude our own PID. Only PulseAudio-compatible
+    servers (PulseAudio, PipeWire's pipewire-pulse) expose this via a CLI;
+    :meth:`available` is false elsewhere.
+    """
+
+    tool = "pactl"
+
+    def __init__(self, amount: int, exclude_pid: int | None = None,
+                 run: Callable[[list[str]], str | None] = _run) -> None:
+        clamped = _clamp(amount)
+        if clamped != amount:
+            logger.warning("duck_amount %d out of range; clamped to %d", amount, clamped)
+        self._amount = clamped
+        self._pid = os.getpid() if exclude_pid is None else exclude_pid
+        self._run = run
+        self._lock = threading.Lock()
+        self._saved: dict[int, int] = {}  # sink-input index -> original %
+
+    @classmethod
+    def available(cls) -> bool:
+        return sys.platform == "linux" and shutil.which(cls.tool) is not None
+
+    @staticmethod
+    def _parse(output: str) -> list[tuple[int, int | None, int | None]]:
+        """``(index, pid, volume%)`` per sink input in ``pactl list sink-inputs``."""
+        result = []
+        blocks = _SINK_INPUT_RE.split(output)[1:]  # [idx, body, idx, body, ...]
+        for idx_s, body in zip(blocks[0::2], blocks[1::2]):
+            pid_m = _PID_RE.search(body)
+            vol_m = None
+            for line in body.splitlines():
+                if line.strip().startswith("Volume:"):
+                    vol_m = _PCT_RE.search(line)
+                    break
+            result.append((
+                int(idx_s),
+                int(pid_m.group(1)) if pid_m else None,
+                int(vol_m.group(1)) if vol_m else None,
+            ))
+        return result
+
+    def duck(self) -> None:
+        """Duck all foreign streams present right now. Idempotent per stream."""
+        with self._lock:
+            out = self._run([self.tool, "list", "sink-inputs"])
+            if out is None:
+                return
+            for idx, pid, vol in self._parse(out):
+                if pid == self._pid or vol is None or idx in self._saved:
+                    continue
+                target = round(vol * (100 - self._amount) / 100)
+                if self._run([self.tool, "set-sink-input-volume", str(idx), f"{target}%"]) is not None:
+                    self._saved[idx] = vol
+            if self._saved:
+                logger.debug("Ducked %d stream(s) by %d%%", len(self._saved), self._amount)
+
+    def restore(self) -> None:
+        """Put every ducked stream back to its saved level."""
+        with self._lock:
+            for idx, vol in self._saved.items():
+                # Stream may have gone away; pactl errors are logged at debug by _run.
+                self._run([self.tool, "set-sink-input-volume", str(idx), f"{vol}%"])
+            if self._saved:
+                logger.debug("Restored %d stream(s)", len(self._saved))
+            self._saved.clear()
+
+    @property
+    def is_ducked(self) -> bool:
+        with self._lock:
+            return bool(self._saved)
