@@ -13,11 +13,11 @@ import numpy as np
 
 from vocal.config import VocalConfig
 from vocal.notify import notify
-from vocal.output import inject_text
-from vocal.phrasebook import Phrasebook
-from vocal.postprocess import postprocess
+from vocal.input.inject import inject_text
+from vocal.input.phrasebook import Phrasebook
+from vocal.input.postprocess import postprocess
 from vocal.state import DictationState
-from vocal.transcriber import Transcriber
+from vocal.input.transcriber import Transcriber
 
 logger = logging.getLogger(__name__)
 

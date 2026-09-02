@@ -11,13 +11,13 @@ from collections.abc import Callable
 import numpy as np
 import sounddevice as sd
 
-from vocal.audio import resolve_device
-from vocal.base_engine import BaseDictationEngine
+from vocal.input.audio import resolve_device
+from vocal.input.base_engine import BaseDictationEngine
 from vocal.config import VocalConfig
-from vocal.hotkey import create_listener
-from vocal.phrasebook import Phrasebook
+from vocal.input.hotkey import create_listener
+from vocal.input.phrasebook import Phrasebook
 from vocal.state import DictationState
-from vocal.vad import WINDOW_SAMPLES, SpeechDetector, StreamingVAD
+from vocal.input.vad import WINDOW_SAMPLES, SpeechDetector, StreamingVAD
 
 logger = logging.getLogger(__name__)
 

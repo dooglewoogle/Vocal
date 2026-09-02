@@ -12,7 +12,7 @@ from collections.abc import Callable
 
 from vocal.config import CONFIG_DIR, CONFIG_PATH, VocalConfig, load_config
 from vocal.state import DictationState
-from vocal.phrasebook import Phrasebook
+from vocal.input.phrasebook import Phrasebook
 from vocal.utils import (
     check_dependencies,
     check_tray_dependencies,
@@ -209,8 +209,8 @@ def _run_with_tray(
     phrasebook: Phrasebook | None,
 ) -> None:
     """Main-thread flow: construct tray + engine, wire shutdown, run."""
-    from vocal.audio import resolve_device
-    from vocal.base_engine import BaseDictationEngine
+    from vocal.input.audio import resolve_device
+    from vocal.input.base_engine import BaseDictationEngine
     from vocal.tray import TrayIcon
 
     shutdown_started = threading.Event()
@@ -232,14 +232,14 @@ def _run_with_tray(
 
     def _make_engine(mode: str) -> BaseDictationEngine:
         if mode == "live":
-            from vocal.live import LiveDictationEngine
+            from vocal.input.live import LiveDictationEngine
             return LiveDictationEngine(
                 config, phrasebook, args.phrasebook, args.phrasebook_replace,
                 on_state_change=tray.set_state,
                 on_shutdown_requested=request_shutdown,
             )
         else:
-            from vocal.engine import DictationEngine
+            from vocal.input.engine import DictationEngine
             return DictationEngine(
                 config, phrasebook, args.phrasebook, args.phrasebook_replace,
                 on_state_change=tray.set_state,
@@ -286,7 +286,7 @@ def _run_with_tray(
             switching_mode.clear()
 
     def on_open_phrasebook() -> None:
-        from vocal.phrasebook import PHRASEBOOK_PATH
+        from vocal.input.phrasebook import PHRASEBOOK_PATH
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         if not PHRASEBOOK_PATH.exists():
             PHRASEBOOK_PATH.write_text(
@@ -344,7 +344,7 @@ def main() -> None:
         return
 
     if args.benchmark:
-        from vocal.benchmark import run_benchmark
+        from vocal.input.benchmark import run_benchmark
         run_benchmark(
             latency_target=args.latency_target,
             compute_type=args.compute_type or "int8",
@@ -406,7 +406,7 @@ def main() -> None:
     # Load phrasebook if either flag is set
     phrasebook = None
     if args.phrasebook or args.phrasebook_replace:
-        from vocal.phrasebook import load_phrasebook
+        from vocal.input.phrasebook import load_phrasebook
         phrasebook = load_phrasebook()
 
     _run_with_tray(config, args, phrasebook)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from vocal.config import PostprocessConfig
-from vocal.phrasebook import Phrasebook
+from vocal.input.phrasebook import Phrasebook
 
 HALLUCINATION_PATTERNS = [
     re.compile(r"^\s*\[.*\]\s*$"),

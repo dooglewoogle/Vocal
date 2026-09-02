@@ -8,7 +8,7 @@ import time
 import numpy as np
 
 from vocal.config import ModelConfig, VADConfig
-from vocal.phrasebook import Phrasebook
+from vocal.input.phrasebook import Phrasebook
 
 logger = logging.getLogger(__name__)
 

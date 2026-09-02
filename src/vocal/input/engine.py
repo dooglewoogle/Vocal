@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from vocal.audio import AudioBuffer, AudioCapture
-from vocal.base_engine import BaseDictationEngine
+from vocal.input.audio import AudioBuffer, AudioCapture
+from vocal.input.base_engine import BaseDictationEngine
 from vocal.config import VocalConfig
-from vocal.hotkey import create_listener
-from vocal.phrasebook import Phrasebook
+from vocal.input.hotkey import create_listener
+from vocal.input.phrasebook import Phrasebook
 from vocal.state import DictationState
 from vocal.volume import Ducker, detect_backend
 
