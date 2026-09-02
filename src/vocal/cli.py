@@ -185,6 +185,24 @@ def _fail_missing(missing: list[str], missing_tray: list[str]) -> None:
     sys.exit(1)
 
 
+def _resolve_initial_mode(args: argparse.Namespace) -> str:
+    """Pick the starting engine: "live" or "hotkey".
+
+    --hotkey / --live are explicit. Without either, --mode or --duck imply
+    hotkey mode, since both are meaningless as dictation controls in live mode.
+    """
+    if args.hotkey:
+        return "hotkey"
+    if args.live:
+        if args.duck:
+            logger.warning("--duck has no effect in live mode")
+        return "live"
+    if args.mode or args.duck:
+        logger.info("Inferred hotkey mode from --mode/--duck (pass --live to override)")
+        return "hotkey"
+    return "live"
+
+
 def _run_with_tray(
     config: VocalConfig,
     args: argparse.Namespace,
@@ -287,7 +305,11 @@ def _run_with_tray(
 
     # ── Build tray + engine ─────────────────────────────────────────
 
-    initial_mode = "hotkey" if args.hotkey else "live"
+    initial_mode = _resolve_initial_mode(args)
+    if initial_mode == "hotkey":
+        logger.info("Starting in hotkey mode (%s, key=%s)", config.hotkey.mode, config.hotkey.key)
+    else:
+        logger.info("Starting in live mode")
 
     tray = TrayIcon(
         on_toggle_pause=on_toggle_pause,

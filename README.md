@@ -65,9 +65,9 @@ A tray icon appears: green when listening, grey when paused, amber when transcri
 |------|---------|-------------|
 | **Live** (default) | `vocal` | Always-on; VAD detects speech boundaries automatically |
 | **Hotkey** | `vocal --hotkey` | Press hotkey to record, press again to transcribe |
-| **Push-to-talk** | `vocal --hotkey --mode ptt` | Hold hotkey to record, release to transcribe |
+| **Push-to-talk** | `vocal --mode ptt` | Hold hotkey to record, release to transcribe |
 
-In live mode the hotkey pauses/resumes listening (hold-to-mute in PTT mode).
+Passing `--mode` or `--duck` implies `--hotkey`. Add `--live` explicitly to combine them with live mode, where the hotkey pauses/resumes listening (hold-to-mute in PTT mode).
 
 ### Volume ducking
 
