@@ -1,4 +1,7 @@
-"""Global hotkey listener via evdev (Linux) or pynput (cross-platform)."""
+"""Global hotkey listener via evdev (Linux) or pynput (cross-platform).
+
+Hold-to-talk only: ``on_start`` fires on key down, ``on_stop`` on key up.
+"""
 
 from __future__ import annotations
 
@@ -74,12 +77,11 @@ class EvdevHotkeyListener:
         """Block and listen for hotkey events. Call from main thread."""
         keyboards = self._find_keyboards()
         key_code = self._resolve_key_code()
-        mode = self._config.mode
         self._running = True
 
         logger.info(
-            "Listening for %s (code=%d) in %s mode on %d device(s)",
-            self._config.key, key_code, mode, len(keyboards),
+            "Listening for %s (code=%d) on %d device(s)",
+            self._config.key, key_code, len(keyboards),
         )
 
         try:
@@ -92,7 +94,7 @@ class EvdevHotkeyListener:
                     try:
                         for event in dev.read():
                             if event.type == 1 and event.code == key_code:
-                                self._handle_event(event.value, mode)
+                                self._handle_event(event.value)
                     except OSError:
                         logger.warning("Lost device: %s", dev.path)
                         try:
@@ -107,29 +109,18 @@ class EvdevHotkeyListener:
                 except Exception:
                     pass
 
-    def _handle_event(self, value: int, mode: str) -> None:
-        """Handle a key event. value: 0=up, 1=down, 2=hold/repeat."""
-        if mode == "toggle":
-            if value == 1:  # key down
-                if self._recording:
-                    self._recording = False
-                    logger.info("Toggle OFF — stopping recording")
-                    self._on_stop()
-                else:
-                    self._recording = True
-                    logger.info("Toggle ON — starting recording")
-                    self._on_start()
-        elif mode == "ptt":
-            if value == 1:  # key down
+    def _handle_event(self, value: int) -> None:
+        """Hold-to-talk. value: 0=up, 1=down, 2=hold/repeat (ignored)."""
+        if value == 1:  # key down
+            if not self._recording:
                 self._recording = True
-                logger.info("PTT DOWN — starting recording")
+                logger.info("Hotkey DOWN — starting recording")
                 self._on_start()
-            elif value == 0:  # key up
-                if self._recording:
-                    self._recording = False
-                    logger.info("PTT UP — stopping recording")
-                    self._on_stop()
-            # value == 2 (hold/repeat) is intentionally ignored
+        elif value == 0:  # key up
+            if self._recording:
+                self._recording = False
+                logger.info("Hotkey UP — stopping recording")
+                self._on_stop()
 
     def stop(self) -> None:
         """Signal the listener to stop."""
@@ -177,24 +168,14 @@ class PynputHotkeyListener:
             )
 
         target_key = self._resolve_key()
-        mode = self._config.mode
 
         def on_press(key):
-            if key == target_key:
-                if mode == "toggle":
-                    if self._recording:
-                        self._recording = False
-                        self._on_stop()
-                    else:
-                        self._recording = True
-                        self._on_start()
-                elif mode == "ptt":
-                    if not self._recording:
-                        self._recording = True
-                        self._on_start()
+            if key == target_key and not self._recording:
+                self._recording = True
+                self._on_start()
 
         def on_release(key):
-            if key == target_key and mode == "ptt" and self._recording:
+            if key == target_key and self._recording:
                 self._recording = False
                 self._on_stop()
 

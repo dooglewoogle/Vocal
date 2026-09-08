@@ -275,10 +275,9 @@ class LiveDictationEngine(BaseDictationEngine):
         self._install_signal_handlers()
 
         key = self._config.input.hotkey.key
-        mode = self._config.input.hotkey.mode
         print(
             f"\nVocal live mode \u2014 listening for speech. "
-            f"Press {key} ({mode}) to pause/resume. Ctrl+C to stop.\n",
+            f"Hold {key} to mute. Ctrl+C to stop.\n",
             flush=True,
         )
 

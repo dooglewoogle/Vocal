@@ -95,7 +95,7 @@ class StatusTab(ttk.Frame):
     def refresh_summary(self) -> None:
         cfg = self.app.config
         mode = "live (always listening)" if cfg.input.engine == "live" else (
-            f"hotkey {cfg.input.hotkey.key} ({cfg.input.hotkey.mode})"
+            f"hotkey (hold {cfg.input.hotkey.key})"
         )
         self._summary.configure(
             text=f"Mode: {mode}   ·   Whisper: {cfg.input.model.size}   ·   Voice: {cfg.output.speech.voice}"

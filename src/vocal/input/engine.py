@@ -138,8 +138,7 @@ class DictationEngine(BaseDictationEngine):
         self._install_signal_handlers()
 
         print(
-            f"\nVocal ready \u2014 press {self._config.input.hotkey.key} "
-            f"({self._config.input.hotkey.mode} mode) to dictate.\n",
+            f"\nVocal ready \u2014 hold {self._config.input.hotkey.key} to dictate.\n",
             flush=True,
         )
 

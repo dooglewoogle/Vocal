@@ -66,8 +66,7 @@ class AudioConfig:
 @dataclass
 class HotkeyConfig:
     backend: str = "auto"
-    key: str = "PAUSE"
-    mode: str = "toggle"
+    key: str = "PAUSE"  # hold to record (hotkey mode) / hold to mute (live mode)
     duck: bool = False
     duck_amount: int = 50
 

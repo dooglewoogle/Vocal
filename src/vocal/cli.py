@@ -51,11 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--key", type=str, default=None,
-        help="Hotkey name (e.g., PAUSE, F18, SCROLLLOCK)",
+        help="Hotkey name (e.g., PAUSE, F18, SCROLLLOCK); hold to record, or hold to mute in live mode",
     )
-    parser.add_argument(
-        "--mode", type=str, choices=["toggle", "ptt"], default=None,
-        help="Hotkey mode: toggle or push-to-talk",
+    parser.add_argument(  # 0.3 flag; hotkey is hold-to-talk only now. Accepted so old launchers keep working.
+        "--mode", type=str, choices=["toggle", "ptt"], default=None, help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--duck", action="store_true", default=None,
@@ -223,8 +222,8 @@ def _fail_missing(missing: list[str], missing_tray: list[str]) -> None:
 def _resolve_initial_mode(args: argparse.Namespace) -> str | None:
     """Engine requested on the command line: "live", "hotkey", or None.
 
-    --hotkey / --live are explicit. Without either, --mode or --duck imply
-    hotkey mode, since both are meaningless as dictation controls in live mode.
+    --hotkey / --live are explicit. Without either, --duck implies hotkey
+    mode, since recording-time ducking is meaningless in live mode.
     None means nothing was asked for, so the config file's ``input.engine``
     (or its default) applies.
     """
@@ -234,8 +233,8 @@ def _resolve_initial_mode(args: argparse.Namespace) -> str | None:
         if args.duck:
             logger.warning("--duck has no effect in live mode")
         return "live"
-    if args.mode or args.duck:
-        logger.info("Inferred hotkey mode from --mode/--duck (pass --live to override)")
+    if args.duck or getattr(args, "mode", None):
+        logger.info("Inferred hotkey mode from --duck/--mode (pass --live to override)")
         return "hotkey"
     return None
 
@@ -353,8 +352,6 @@ def _apply_cli_overrides(config: VocalConfig, args: argparse.Namespace) -> set[s
         put("input.model.beam_size", args.beam_size)
     if args.key:
         put("input.hotkey.key", args.key)
-    if args.mode:
-        put("input.hotkey.mode", args.mode)
     if args.duck:
         put("input.hotkey.duck", True)
     if args.duck_amount is not None:
@@ -365,6 +362,8 @@ def _apply_cli_overrides(config: VocalConfig, args: argparse.Namespace) -> set[s
         put("input.hotkey.backend", args.hotkey_backend)
     if args.silence_ms is not None:
         put("input.live.min_silence_duration_ms", args.silence_ms)
+    if getattr(args, "mode", None):
+        logger.warning("--mode is ignored since 0.4: the hotkey is always hold-to-talk")
     if args.phrasebook:
         put("input.phrasebook.seed", True)
     if args.phrasebook_replace:

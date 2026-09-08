@@ -10,7 +10,7 @@ from vocal.cli import _resolve_initial_mode
 
 
 def _args(**kw) -> argparse.Namespace:
-    base = dict(hotkey=False, live=False, mode=None, duck=None)
+    base = dict(hotkey=False, live=False, duck=None, mode=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -21,12 +21,10 @@ def _args(**kw) -> argparse.Namespace:
         ({}, None),
         ({"hotkey": True}, "hotkey"),
         ({"live": True}, "live"),
-        ({"mode": "ptt"}, "hotkey"),
-        ({"mode": "toggle"}, "hotkey"),
         ({"duck": True}, "hotkey"),
-        ({"mode": "ptt", "live": True}, "live"),
         ({"duck": True, "live": True}, "live"),
-        ({"hotkey": True, "mode": "ptt", "duck": True}, "hotkey"),
+        ({"mode": "ptt"}, "hotkey"),  # deprecated flag still implies hotkey mode
+        ({"hotkey": True, "duck": True}, "hotkey"),
     ],
 )
 def test_resolve_initial_mode(kw, expected):
@@ -88,13 +86,17 @@ def test_cli_overrides_report_paths() -> None:
     from vocal.config import VocalConfig
 
     cfg = VocalConfig()
-    args = parse_args(["--mode", "ptt", "--key", "END", "--phrasebook", "--model", "tiny.en"])
+    args = parse_args(["--duck", "--key", "END", "--phrasebook", "--model", "tiny.en"])
     touched = _apply_cli_overrides(cfg, args)
-    assert cfg.input.engine == "hotkey" and cfg.input.hotkey.mode == "ptt"
+    assert cfg.input.engine == "hotkey" and cfg.input.hotkey.duck is True
     assert cfg.input.hotkey.key == "END" and cfg.input.phrasebook.seed is True
     assert cfg.input.model.size == "tiny.en"
-    assert touched == {"input.engine", "input.hotkey.mode", "input.hotkey.key",
+    assert touched == {"input.engine", "input.hotkey.duck", "input.hotkey.key",
                        "input.phrasebook.seed", "input.model.size"}
+
+    # deprecated --mode: accepted, implies hotkey, writes nothing else
+    cfg3 = VocalConfig()
+    assert _apply_cli_overrides(cfg3, parse_args(["--mode", "ptt"])) == {"input.engine"}
 
     cfg2 = VocalConfig()
     cfg2.input.engine = "hotkey"
