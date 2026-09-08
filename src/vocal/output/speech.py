@@ -81,7 +81,7 @@ class SpeechController:
         try:
             return get_voice(self._config.voice).backend
         except VoiceNotFoundError:
-            return self._config.backend
+            return "unknown"
 
     @property
     def is_speaking(self) -> bool:
@@ -136,13 +136,13 @@ class SpeechController:
         """Adopt ``new`` in place on this controller (other components hold a
         reference to it and to our config object).
 
-        Voice / backend / model_path changes invalidate the loaded voice so the
+        Voice / model_path changes invalidate the loaded voice so the
         next utterance reloads; a device change re-targets the player. speed and
         volume are read per utterance and need nothing.
         """
         with self._voice_lock:
             old = self._config
-            reload = (old.voice, old.backend, old.model_path) != (new.voice, new.backend, new.model_path)
+            reload = (old.voice, old.model_path) != (new.voice, new.model_path)
             device_changed = old.device != new.device
             copy_into(old, new)
         if reload:

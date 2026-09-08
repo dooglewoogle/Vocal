@@ -131,8 +131,7 @@ class InputConfig:
 
 @dataclass
 class SpeechConfig:
-    backend: str = "piper"  # piper | kokoro | system
-    voice: str = "piper-en-lessac-medium"  # key in vocal.output.models.VOICES
+    voice: str = "piper-en-lessac-medium"  # key in vocal.output.models.VOICES; decides the backend
     model_path: str | None = None  # manual model location; bypasses registry/download
     auto_download: bool = True
     speed: float = 1.0

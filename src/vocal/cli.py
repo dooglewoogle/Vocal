@@ -132,10 +132,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--voice", type=str, default=None,
         help="TTS voice name (see `vocal models list`)",
     )
-    parser.add_argument(
-        "--tts-backend", type=str, choices=["piper", "kokoro", "system"], default=None,
-        help="TTS backend used with output.speech.model_path",
-    )
 
     # ── Subcommands ──
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -190,8 +186,6 @@ def _load_config_or_exit(args: argparse.Namespace) -> VocalConfig:
         sys.exit(1)
     if getattr(args, "voice", None):
         config.output.speech.voice = args.voice
-    if getattr(args, "tts_backend", None):
-        config.output.speech.backend = args.tts_backend
     if getattr(args, "no_server", False):
         config.output.server.enabled = False
     return config
@@ -376,8 +370,6 @@ def _apply_cli_overrides(config: VocalConfig, args: argparse.Namespace) -> set[s
     # Speech flags are applied in _load_config_or_exit (shared with `vocal say`).
     if getattr(args, "voice", None):
         touched.add("output.speech.voice")
-    if getattr(args, "tts_backend", None):
-        touched.add("output.speech.backend")
     if getattr(args, "no_server", False):
         touched.add("output.server.enabled")
     return touched

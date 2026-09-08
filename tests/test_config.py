@@ -35,7 +35,6 @@ def test_nested_tables_apply(tmp_path: Path) -> None:
         method = "xdotool"
 
         [output.speech]
-        backend = "kokoro"
         voice = "kokoro-af_sarah"
         speed = 1.2
         pause_input = false
@@ -49,7 +48,6 @@ def test_nested_tables_apply(tmp_path: Path) -> None:
     assert cfg.input.hotkey.key == "F12"
     assert cfg.input.hotkey.duck is True
     assert cfg.input.inject.method == "xdotool"
-    assert cfg.output.speech.backend == "kokoro"
     assert cfg.output.speech.voice == "kokoro-af_sarah"
     assert cfg.output.speech.speed == 1.2
     assert cfg.output.speech.pause_input is False
@@ -102,8 +100,8 @@ def test_legacy_error_lists_all_offending_tables(tmp_path: Path) -> None:
 
 
 def test_new_output_table_not_mistaken_for_legacy(tmp_path: Path) -> None:
-    cfg = load_config(_write(tmp_path, "[output.speech]\nbackend = 'system'\n"))
-    assert cfg.output.speech.backend == "system"
+    cfg = load_config(_write(tmp_path, "[output.speech]\nvoice = 'system'\n"))
+    assert cfg.output.speech.voice == "system"
 
 
 # ── engine key ──
