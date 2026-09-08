@@ -218,3 +218,41 @@ def test_forms_lay_out_without_clipping(window, advanced) -> None:
                 if isinstance(child, ttk.Label) and child.winfo_ismapped():
                     assert not _clipped(child), child.cget("text")
     w.root.withdraw()
+
+
+def test_every_field_has_help_text() -> None:
+    from vocal.gui.settings_form import SERVER_FIELDS
+
+    missing = [s.path for s in all_fields() + SERVER_FIELDS if not s.help or len(s.help) < 20]
+    assert missing == [], missing
+
+
+def test_tooltip_shows_after_delay_and_hides_on_leave(window) -> None:
+    from vocal.gui.tooltip import Tooltip
+
+    w, _ = window
+    btn = ttk.Button(w.root, text="hover me")
+    btn.pack()
+    t = Tooltip(btn, "explanation", delay_ms=10)
+    w.root.update()
+    btn.event_generate("<Enter>")
+    for _ in range(50):
+        w.root.update()
+        if t.visible:
+            break
+        w.root.after(5)
+        w.root.update_idletasks()
+    assert t.visible, "tooltip did not appear"
+    label = t._tip.winfo_children()[0]
+    assert label.cget("text") == "explanation"
+    btn.event_generate("<Leave>")
+    w.root.update()
+    assert not t.visible
+
+
+def test_form_rows_carry_tooltips(window) -> None:
+    w, _ = window
+    for form in (w.dictation.form, w.speech.form):
+        for spec in form.fields:
+            widget = form._widgets[spec.path]
+            assert "<Enter>" in widget.bind(), spec.path

@@ -7,6 +7,7 @@ from tkinter import ttk
 from typing import TYPE_CHECKING
 
 from vocal.gui.settings_form import SERVER_FIELDS, SettingsForm, make_field_widget, speech_fields
+from vocal.gui.tooltip import tip
 
 if TYPE_CHECKING:
     from vocal.gui.window import VocalWindow
@@ -32,9 +33,9 @@ class SpeechTab(ttk.Frame):
         for spec in SERVER_FIELDS:
             widget, var = make_field_widget(row, spec)
             if spec.kind != "bool":
-                ttk.Label(row, text=spec.label).pack(side="left", padx=(16, 4))
+                tip(ttk.Label(row, text=spec.label), spec.help).pack(side="left", padx=(16, 4))
                 widget.configure(width=16 if spec.path.endswith("host") else 7)  # type: ignore[call-arg]
-            widget.pack(side="left")
+            tip(widget, spec.help).pack(side="left")
             form.add_field(spec, widget, var)
 
         box = ttk.LabelFrame(parent, text="Voices", padding=(10, 6))
@@ -52,10 +53,18 @@ class SpeechTab(ttk.Frame):
         bar = ttk.Frame(box)
         bar.pack(fill="x", pady=(6, 0))
         self._dl_btn = ttk.Button(bar, text="Download", command=self._download)
-        self._dl_btn.pack(side="left")
-        ttk.Button(bar, text="Remove", command=self._remove).pack(side="left", padx=4)
-        ttk.Button(bar, text="Use this voice", command=self._use_voice).pack(side="left", padx=4)
-        ttk.Button(bar, text="Test", command=self._test).pack(side="left", padx=4)
+        tip(self._dl_btn, "Fetch the selected voice's model files into ~/.cache/vocal/models. Piper voices "
+                          "are ~65 MB; the Kokoro voices share one 330 MB download.").pack(side="left")
+        tip(ttk.Button(bar, text="Remove", command=self._remove),
+            "Delete the selected voice's downloaded files. It can be downloaded again later.").pack(side="left", padx=4)
+        tip(ttk.Button(bar, text="Use this voice", command=self._use_voice),
+            "Make the selected voice the default for everything Vocal says, and save that choice.").pack(side="left", padx=4)
+        tip(ttk.Button(bar, text="Test", command=self._test),
+            "Speak a sample sentence with the selected voice, interrupting anything currently "
+            "playing. Downloads the voice first if needed.").pack(side="left", padx=4)
+        tip(self._voices, "Text-to-speech voices. piper-* are fast and light; kokoro-* sound more natural but "
+                          "take about a second to start on CPU; system uses the OS speech engine. "
+                          "Downloaded = files present. Current = the default voice.")
         self._voice_status = ttk.Label(bar, text="", foreground="#666")
         self._voice_status.pack(side="left", padx=12)
 

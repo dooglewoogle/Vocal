@@ -44,6 +44,9 @@ class VocalWindow:
             ttk.Style().theme_use("clam")
         except tk.TclError:  # pragma: no cover - theme missing on exotic builds
             pass
+        from vocal.gui.tooltip import install_style
+
+        install_style()
 
         self._q: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
         self._has_tray = False

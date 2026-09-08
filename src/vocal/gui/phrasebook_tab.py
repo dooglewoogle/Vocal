@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
 
+from vocal.gui.tooltip import tip
 from vocal.input.phrasebook import PHRASEBOOK_PATH, load_phrasebook, save_phrasebook
 
 if TYPE_CHECKING:
@@ -50,17 +51,25 @@ class PhrasebookTab(ttk.Frame):
         edit.pack(fill="x", pady=6)
         self._wrong = tk.StringVar()
         self._right = tk.StringVar()
-        ttk.Entry(edit, textvariable=self._wrong, width=30).pack(side="left")
+        tip(ttk.Entry(edit, textvariable=self._wrong, width=30),
+            "What Whisper tends to hear. Matched as whole words, case-insensitively.").pack(side="left")
         ttk.Label(edit, text="→").pack(side="left", padx=6)
-        ttk.Entry(edit, textvariable=self._right, width=30).pack(side="left")
-        ttk.Button(edit, text="Add / Update", command=self._add).pack(side="left", padx=6)
-        ttk.Button(edit, text="Delete", command=self._delete).pack(side="left")
+        tip(ttk.Entry(edit, textvariable=self._right, width=30),
+            "What should be written instead. These terms also seed recognition when biasing is on.").pack(side="left")
+        tip(ttk.Button(edit, text="Add / Update", command=self._add),
+            "Add the rule, or replace the correction if the left-hand phrase already exists.").pack(side="left", padx=6)
+        tip(ttk.Button(edit, text="Delete", command=self._delete),
+            "Remove the selected rule from the list (takes effect on Save).").pack(side="left")
 
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(4, 0))
-        ttk.Button(bar, text="Save & Apply", command=self.save).pack(side="left")
-        ttk.Button(bar, text="Reload from file", command=self.reload).pack(side="left", padx=6)
-        ttk.Button(bar, text="Open in editor", command=lambda: open_in_editor()).pack(side="left")
+        tip(ttk.Button(bar, text="Save & Apply", command=self.save),
+            "Write phrasebook.toml and hand the rules to the running engine. No model reload; the next "
+            "utterance already uses them.").pack(side="left")
+        tip(ttk.Button(bar, text="Reload from file", command=self.reload),
+            "Discard unsaved edits and re-read phrasebook.toml, e.g. after editing it by hand.").pack(side="left", padx=6)
+        tip(ttk.Button(bar, text="Open in editor", command=lambda: open_in_editor()),
+            "Open phrasebook.toml in your desktop's default text editor.").pack(side="left")
         self._status = ttk.Label(bar, text="", foreground="#666")
         self._status.pack(side="right")
 
@@ -68,10 +77,14 @@ class PhrasebookTab(ttk.Frame):
         flags.pack(fill="x", pady=(8, 0))
         self._seed = tk.BooleanVar(value=self.app.config.input.phrasebook.seed)
         self._replace = tk.BooleanVar(value=self.app.config.input.phrasebook.replace)
-        ttk.Checkbutton(flags, text="Bias recognition toward these terms", variable=self._seed,
-                        command=self._apply_flags).pack(side="left")
-        ttk.Checkbutton(flags, text="Apply corrections after transcription", variable=self._replace,
-                        command=self._apply_flags).pack(side="left", padx=12)
+        tip(ttk.Checkbutton(flags, text="Bias recognition toward these terms", variable=self._seed,
+                            command=self._apply_flags),
+            "Feed the right-hand terms to Whisper as a decoding prompt so it prefers them when unsure. "
+            "Saved to config.toml immediately.").pack(side="left")
+        tip(ttk.Checkbutton(flags, text="Apply corrections after transcription", variable=self._replace,
+                            command=self._apply_flags),
+            "After each transcription, replace every left-hand phrase with its correction. "
+            "Saved to config.toml immediately.").pack(side="left", padx=12)
 
         self.reload()
 

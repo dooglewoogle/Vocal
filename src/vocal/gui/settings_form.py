@@ -18,6 +18,7 @@ from tkinter import ttk
 from typing import TYPE_CHECKING, Any
 
 from vocal.config import ENGINES, VocalConfig
+from vocal.gui.tooltip import tip
 
 if TYPE_CHECKING:
     from vocal.gui.window import VocalWindow
@@ -49,42 +50,88 @@ def dictation_fields() -> list[FieldSpec]:
     F = FieldSpec
     return [
         F("input.engine", "Dictation mode", "choice", choices=ENGINES,
-          labels={"live": "live (always listening)", "hotkey": "hotkey (hold to record)"}),
-        F("input.hotkey.key", "Hotkey (hold to record; hold to mute in live mode)", "str",
-          help="e.g. PAUSE, F18, SCROLLLOCK, END"),
-        F("input.live.min_silence_duration_ms", "End of sentence after silence (ms)", "int"),
-        F("input.hotkey.duck", "Lower system volume while recording", "bool"),
+          labels={"live": "live (always listening)", "hotkey": "hotkey (hold to record)"},
+          help="Live keeps the microphone open and uses voice detection to find sentence boundaries. "
+               "Hotkey records only while the key is held. Changing this restarts dictation."),
+        F("input.hotkey.key", "Hotkey", "str",
+          help="Key name as evdev reports it, without the KEY_ prefix: PAUSE, F18, SCROLLLOCK, END… "
+               "In hotkey mode, hold it to record. In live mode, hold it to mute the microphone."),
+        F("input.live.min_silence_duration_ms", "End of sentence after silence (ms)", "int",
+          help="Live mode: a pause this long ends the utterance and sends it for transcription. "
+               "Lower is snappier but splits sentences at hesitations."),
+        F("input.hotkey.duck", "Lower system volume while recording", "bool",
+          help="Hotkey mode only: turns the system output volume down while you hold the key so playback "
+               "does not bleed into the microphone, then ramps it back over ~300 ms."),
         # ── Advanced ──
-        F("input.model.compute_type", "Compute type", "choice", advanced=True, choices=("int8", "float32")),
-        F("input.model.beam_size", "Beam size (1 = fastest, 5 = thorough)", "int", advanced=True),
-        F("input.model.cpu_threads", "CPU threads (0 = auto)", "int", advanced=True),
-        F("input.model.language", "Language code", "str", advanced=True),
-        F("input.audio.device", "Microphone", "device_in", advanced=True),
-        F("input.audio.sample_rate", "Sample rate", "int", advanced=True),
-        F("input.audio.block_size", "Audio block size", "int", advanced=True),
-        F("input.live.min_speech_duration_ms", "Minimum speech length (ms)", "int", advanced=True),
-        F("input.live.max_speech_duration_s", "Maximum utterance length (s)", "float", advanced=True),
-        F("input.hotkey.backend", "Hotkey backend", "choice", advanced=True, choices=("auto", "evdev", "pynput")),
-        F("input.hotkey.duck_amount", "Recording duck amount (%)", "int", advanced=True),
+        F("input.model.compute_type", "Compute type", "choice", advanced=True, choices=("int8", "float32"),
+          help="int8 is the fast, quantised default for CPUs. float32 is slower and uses about four times "
+               "the memory, with a small accuracy gain on some machines."),
+        F("input.model.beam_size", "Beam size", "int", advanced=True,
+          help="How many decoding hypotheses Whisper keeps in parallel. 1 is greedy and fastest; "
+               "5 is noticeably slower and slightly more accurate. 3 is a good middle."),
+        F("input.model.cpu_threads", "CPU threads", "int", advanced=True,
+          help="Threads used for Whisper inference. 0 lets the runtime choose, which is usually right."),
+        F("input.model.language", "Language code", "str", advanced=True,
+          help="ISO 639-1 code such as en, de, fr. Only matters with a multilingual model (no .en suffix); "
+               "English-only models ignore it."),
+        F("input.audio.device", "Microphone", "device_in", advanced=True,
+          help="Which input device to capture. The list comes from PortAudio; the system default follows "
+               "your desktop's sound settings, so it usually needs no change."),
+        F("input.audio.sample_rate", "Sample rate (Hz)", "int", advanced=True,
+          help="Capture rate. Whisper expects 16000; change only if your device cannot deliver it."),
+        F("input.audio.block_size", "Audio block size (frames)", "int", advanced=True,
+          help="Frames per audio callback in hotkey mode. Larger blocks add latency, smaller ones cost CPU."),
+        F("input.live.min_speech_duration_ms", "Minimum speech length (ms)", "int", advanced=True,
+          help="Live mode: sounds shorter than this are treated as noise and never transcribed."),
+        F("input.live.max_speech_duration_s", "Maximum utterance length (s)", "float", advanced=True,
+          help="Live mode: an utterance is cut and transcribed once it reaches this length, even without a pause."),
+        F("input.hotkey.backend", "Hotkey backend", "choice", advanced=True, choices=("auto", "evdev", "pynput"),
+          help="evdev reads /dev/input directly and works on X11 and Wayland (your user must be in the input "
+               "group). pynput works on macOS, Windows and X11 only. auto picks evdev when it is available."),
+        F("input.hotkey.duck_amount", "Recording duck amount (%)", "int", advanced=True,
+          help="Relative cut applied to the current system volume while recording: at 50, a volume of 80% "
+               "drops to 40%."),
         F("input.inject.method", "Insert text via", "choice", advanced=True, choices=("clipboard", "xdotool"),
-          labels={"clipboard": "clipboard (paste with Ctrl+V)", "xdotool": "xdotool (simulated typing)"}),
-        F("input.inject.xdotool_delay", "Typing delay per key (ms)", "int", advanced=True),
-        F("input.postprocess.capitalize_first", "Capitalise first letter", "bool", advanced=True),
-        F("input.postprocess.strip_leading_space", "Strip leading space", "bool", advanced=True),
-        F("input.postprocess.remove_filler_words", "Remove filler words (um, uh…)", "bool", advanced=True),
-        F("input.postprocess.remove_hallucinations", "Drop known Whisper hallucinations", "bool", advanced=True),
-        F("input.vad.enabled", "Use Whisper's VAD filter", "bool", advanced=True),
-        F("input.vad.threshold", "Speech probability threshold", "float", advanced=True),
-        F("input.vad.min_silence_duration_ms", "VAD min silence (ms)", "int", advanced=True),
-        F("input.vad.speech_pad_ms", "Speech padding (ms)", "int", advanced=True),
+          labels={"clipboard": "clipboard (paste with Ctrl+V)", "xdotool": "xdotool (simulated typing)"},
+          help="clipboard copies the text, sends Ctrl+V, then restores what was on your clipboard. "
+               "xdotool (wtype on Wayland) types the characters one by one: slower, but works in apps "
+               "where paste does not."),
+        F("input.inject.xdotool_delay", "Typing delay per key (ms)", "int", advanced=True,
+          help="Pause between simulated keystrokes when inserting via xdotool/wtype. Raise it if characters "
+               "get dropped or arrive out of order."),
+        F("input.postprocess.capitalize_first", "Capitalise first letter", "bool", advanced=True,
+          help="Upper-case the first letter of every transcription."),
+        F("input.postprocess.strip_leading_space", "Strip leading space", "bool", advanced=True,
+          help="Remove the space Whisper often puts before the first word."),
+        F("input.postprocess.remove_filler_words", "Remove filler words", "bool", advanced=True,
+          help="Delete um, uh, hmm and similar hesitations from the transcribed text."),
+        F("input.postprocess.remove_hallucinations", "Drop known hallucinations", "bool", advanced=True,
+          help="Discard phrases Whisper is known to invent from silence or noise, such as "
+               "\u201cThank you for watching\u201d or \u201cSubtitles by\u2026\u201d."),
+        F("input.vad.enabled", "Use Whisper's VAD filter", "bool", advanced=True,
+          help="Run faster-whisper's built-in voice activity filter on each utterance so silent stretches "
+               "are skipped before decoding. Cheap and usually worth keeping on."),
+        F("input.vad.threshold", "Speech probability threshold", "float", advanced=True,
+          help="Probability (0\u20131) above which a frame counts as speech, for both the live detector and the "
+               "VAD filter. Raise it in noisy rooms; lower it if quiet speech is missed."),
+        F("input.vad.min_silence_duration_ms", "VAD min silence (ms)", "int", advanced=True,
+          help="Silence the VAD filter needs before it splits an utterance into separate segments."),
+        F("input.vad.speech_pad_ms", "Speech padding (ms)", "int", advanced=True,
+          help="Extra audio kept on both sides of detected speech so word edges are not clipped."),
     ]
 
 
 #: Speech-server fields are rendered by the Speech tab's header row, not the form body.
 SERVER_FIELDS: list[FieldSpec] = [
-    FieldSpec("output.server.enabled", "Enable speech", "bool"),
-    FieldSpec("output.server.host", "Host", "str"),
-    FieldSpec("output.server.port", "Port", "int"),
+    FieldSpec("output.server.enabled", "Enable speech", "bool",
+              help="Run the localhost HTTP server that lets `vocal say`, scripts and editor hooks make Vocal "
+                   "talk. Off means only dictation runs and nothing can request speech."),
+    FieldSpec("output.server.host", "Host", "str",
+              help="Interface to listen on. Keep 127.0.0.1: the server has no authentication and relies on "
+                   "being reachable from this machine only."),
+    FieldSpec("output.server.port", "Port", "int",
+              help="TCP port for the speech server. If it is already taken, Vocal picks a free one and writes "
+                   "the actual port to the runtime file so clients still find it."),
 ]
 
 
@@ -92,17 +139,38 @@ def speech_fields() -> list[FieldSpec]:
     """Output side. Basic fields first, then the Advanced block, each in display order."""
     F = FieldSpec
     return [
-        F("output.speech.speed", "Speed", "float"),
-        F("output.speech.volume", "Volume (0–100)", "int"),
-        F("output.speech.device", "Speaker", "device_out"),
-        F("output.speech.duck", "Lower other apps while speaking", "bool"),
+        F("output.speech.speed", "Speed", "float",
+          help="Speaking-rate multiplier. 1.0 is the voice's natural pace; 1.2 is brisk, 0.8 is slow."),
+        F("output.speech.volume", "Volume (0\u2013100)", "int",
+          help="Digital gain applied to the synthesized audio before playback. It does not change the "
+               "system volume, so 100 is simply the voice as recorded."),
+        F("output.speech.device", "Speaker", "device_out",
+          help="Output device for speech. The system default follows your desktop's sound settings."),
+        F("output.speech.duck", "Lower other apps while speaking", "bool",
+          help="While speaking, turn down every other application's audio stream (PulseAudio or PipeWire, "
+               "via pactl) so speech is not drowned out. Vocal's own output stays at full volume. Streams "
+               "that start mid-sentence are not ducked."),
         # ── Advanced ──
-        F("output.speech.duck_amount", "Speaking duck amount (%)", "int", advanced=True),
-        F("output.speech.pause_input", "Pause dictation while speaking", "bool", advanced=True),
-        F("output.speech.pause_input_tail_ms", "Keep paused after speech ends (ms)", "int", advanced=True),
-        F("output.speech.model_path", "Manual model path (bypasses downloads)", "str", advanced=True),
-        F("output.speech.auto_download", "Download voices automatically", "bool", advanced=True),
-        F("log_level", "Log level", "choice", advanced=True, choices=("DEBUG", "INFO", "WARNING", "ERROR")),
+        F("output.speech.duck_amount", "Speaking duck amount (%)", "int", advanced=True,
+          help="Relative cut applied to other applications' streams while speaking: at 50, a stream at 80% "
+               "drops to 40%."),
+        F("output.speech.pause_input", "Pause dictation while speaking", "bool", advanced=True,
+          help="Stop consuming the microphone from the first frame of speech until playback ends, so Vocal "
+               "never transcribes its own voice. In hotkey mode, pressing the key cuts the speech instead."),
+        F("output.speech.pause_input_tail_ms", "Keep paused after speech ends (ms)", "int", advanced=True,
+          help="How long the microphone stays paused after the last audio, to cover room echo and any "
+               "audio still buffered in the output device."),
+        F("output.speech.model_path", "Manual model path", "str", advanced=True,
+          help="Load a voice you downloaded yourself instead of the registry: the .onnx file for Piper (with "
+               "its .onnx.json beside it), or the folder holding kokoro-*.onnx and voices-*.bin for Kokoro. "
+               "The selected voice still decides the backend and, for Kokoro, the speaker. Leave empty to "
+               "use the registry."),
+        F("output.speech.auto_download", "Download voices automatically", "bool", advanced=True,
+          help="Fetch a voice's files the first time it is used. Turn off to require an explicit Download "
+               "from the grid above."),
+        F("log_level", "Log level", "choice", advanced=True, choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+          help="Verbosity of the log file (~/.local/state/vocal/vocal.log) and of stderr when run from a "
+               "terminal. DEBUG is noisy but records every audio, hotkey and HTTP event."),
     ]
 
 
@@ -163,7 +231,7 @@ class Collapsible(ttk.Frame):
         self._title = title
         self.open = tk.BooleanVar(value=False)
         self._button = ttk.Button(self, command=self.toggle, style="Toolbutton")
-        self._button.pack(anchor="w")
+        tip(self._button, "Settings most people never change. Hover any field for an explanation.").pack(anchor="w")
         self.body = ttk.Frame(self, padding=(18, 4, 0, 4))
         self.body.columnconfigure(1, weight=1)
         self._render()
@@ -236,8 +304,10 @@ class SettingsForm(ttk.Frame):
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(8, 0))
         self._save_btn = ttk.Button(bar, text="Save & Apply", command=self.save_and_apply)
-        self._save_btn.pack(side="left")
-        ttk.Button(bar, text="Revert", command=self.reload_from_app).pack(side="left", padx=6)
+        tip(self._save_btn, "Write these values to config.toml and apply them now. Dictation changes restart "
+                            "the engine, which takes a few seconds; speech changes apply immediately.").pack(side="left")
+        tip(ttk.Button(bar, text="Revert", command=self.reload_from_app),
+            "Discard your edits and reload the values Vocal is currently running with.").pack(side="left", padx=6)
         self._status = ttk.Label(bar, text="", foreground="#666")
         self._status.pack(side="right")
 
@@ -254,11 +324,8 @@ class SettingsForm(ttk.Frame):
     def _add_row(self, parent: tk.Widget, spec: FieldSpec) -> None:
         row = max((int(w.grid_info()["row"]) for w in parent.grid_slaves()), default=-1) + 1
         widget, var = make_field_widget(parent, spec)
-        ttk.Label(parent, text=spec.label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=2)
-        widget.grid(row=row, column=1, sticky="ew", pady=2)
-        if spec.help:
-            ttk.Label(parent, text=spec.help, foreground="#777", wraplength=600, justify="left").grid(
-                row=row + 1, column=0, columnspan=2, sticky="w", padx=(18, 0), pady=(0, 6))
+        tip(ttk.Label(parent, text=spec.label), spec.help).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=2)
+        tip(widget, spec.help).grid(row=row, column=1, sticky="ew", pady=2)
         self.add_field(spec, widget, var)
 
     def set_advanced(self, show: bool) -> None:

@@ -8,6 +8,7 @@ from tkinter import ttk
 from typing import TYPE_CHECKING
 
 from vocal.gui.settings_form import SettingsForm, dictation_fields
+from vocal.gui.tooltip import tip
 
 if TYPE_CHECKING:
     from vocal.gui.window import VocalWindow
@@ -66,7 +67,12 @@ class DictationTab(ttk.Frame):
         self._models.pack(fill="x")
         bar = ttk.Frame(box)
         bar.pack(fill="x", pady=(6, 0))
-        ttk.Button(bar, text="Use this model", command=self._use_model).pack(side="left")
+        tip(ttk.Button(bar, text="Use this model", command=self._use_model),
+            "Switch dictation to the selected Whisper model. It is downloaded on first use "
+            "(100 MB for tiny, ~3 GB for large) and the dictation engine restarts.").pack(side="left")
+        tip(self._models, "Whisper speech-to-text models. Bigger is more accurate and slower; .en models are "
+                          "English-only and a little more accurate for English. Downloaded = already in the "
+                          "Hugging Face cache. Current = what dictation is using now.")
         self._grid_status = ttk.Label(
             bar, foreground="#666",
             text="Models download on first use (100 MB – 3 GB). Switching restarts dictation.",

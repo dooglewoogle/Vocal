@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
 
+from vocal.gui.tooltip import tip
 from vocal.state import DictationState
 
 if TYPE_CHECKING:
@@ -54,10 +55,12 @@ class StatusTab(ttk.Frame):
         actions = ttk.Frame(self)
         actions.pack(fill="x", pady=(0, 10))
         self._pause_btn = ttk.Button(actions, text="Pause", command=self._toggle_pause)
-        self._pause_btn.pack(side="left")
+        tip(self._pause_btn, "Pause or resume live listening. Only applies in live mode; in hotkey mode "
+                             "nothing is recorded until you hold the key anyway.").pack(side="left")
         self._stop_btn = ttk.Button(actions, text="Stop speaking", command=self._stop_speaking, state="disabled")
-        self._stop_btn.pack(side="left", padx=6)
-        ttk.Button(actions, text="Clear log", command=self.clear).pack(side="right")
+        tip(self._stop_btn, "Stop the current utterance and clear everything queued for speech.").pack(side="left", padx=6)
+        tip(ttk.Button(actions, text="Clear log", command=self.clear),
+            "Clear this transcript list. Nothing on disk is affected.").pack(side="right")
 
         ttk.Label(self, text="Transcripts").pack(anchor="w")
         box = ttk.Frame(self)
