@@ -294,9 +294,7 @@ class SettingsForm(ttk.Frame):
         self._canvas.configure(yscrollcommand=scroll.set)
         self._canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
-        for seq, step in (("<Button-4>", -3), ("<Button-5>", 3)):
-            self._canvas.bind(seq, lambda e, s=step: self._canvas.yview_scroll(s, "units"))
-            self._form.bind(seq, lambda e, s=step: self._canvas.yview_scroll(s, "units"))
+        self._canvas.wheel_scrollable = True  # picked up by VocalWindow's window-wide wheel handler
 
         if header is not None:
             header(self._form, self)

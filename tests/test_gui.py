@@ -257,3 +257,35 @@ def test_form_rows_carry_tooltips(window) -> None:
         for spec in form.fields:
             widget = form._widgets[spec.path]
             assert "<Enter>" in widget.bind(), spec.path
+
+
+def test_wheel_scrolls_settings_page_from_any_widget_and_spares_comboboxes(window) -> None:
+    w, _ = window
+    w.root.geometry("760x300")  # short window so the Dictation page overflows
+    w.root.deiconify()
+    w.notebook.select(w.dictation)
+    form = w.dictation.form
+    form.set_advanced(True)
+    w.root.update()
+    canvas = form._canvas
+    assert canvas.yview()[0] == 0.0
+
+    # Wheel-down over a plain label inside the form scrolls the page.
+    label = next(c for c in form.settings_box.grid_slaves() if isinstance(c, ttk.Label))
+    label.event_generate("<Button-5>", x=2, y=2)
+    w.root.update()
+    assert canvas.yview()[0] > 0.0, "page did not scroll from a label"
+
+    # Over a combobox: page scrolls back up, value unchanged.
+    combo = form._widgets["input.engine"]
+    before = combo.get()
+    combo.event_generate("<Button-4>", x=2, y=2)
+    w.root.update()
+    assert combo.get() == before, "wheel must not change a combobox value"
+    assert canvas.yview()[0] == 0.0
+
+    # Over the Whisper grid (scrolls itself): page untouched.
+    w.dictation._models.event_generate("<Button-5>", x=5, y=5)
+    w.root.update()
+    assert canvas.yview()[0] == 0.0
+    w.root.withdraw()

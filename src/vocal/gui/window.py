@@ -68,11 +68,57 @@ class VocalWindow:
                            (self.speech, "Speech"), (self.phrasebook, "Phrasebook")):
             self.notebook.add(tab, text=label)
 
+        self._install_wheel_scrolling()
+
         # App events → UI thread
         app.on_state.connect(lambda s: self.call_soon(lambda: self.status.set_state(s)))
         app.on_speaking.connect(lambda b: self.call_soon(lambda: self.status.set_speaking(b)))
         app.on_transcript.connect(lambda t: self.call_soon(lambda: self.status.add_transcript(t)))
         app.on_rebuild.connect(lambda b: self.call_soon(lambda: self._on_rebuild(b)))
+
+    # ── Mouse wheel ──────────────────────────────────────────────────
+
+    def _install_wheel_scrolling(self) -> None:
+        """Make the wheel scroll the settings page from anywhere over it.
+
+        Tk sends wheel events only to the widget under the pointer, so a
+        canvas-level binding never fires over labels and entries. One
+        window-wide handler walks up from the hovered widget to the nearest
+        canvas flagged ``wheel_scrollable`` and scrolls that. Widgets that
+        scroll themselves (grids, the transcript box) are left alone, and
+        comboboxes lose Tk's default "wheel changes the selection" behaviour,
+        which is never what you want on a settings page.
+        """
+        for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+            self.root.bind_all(seq, self._on_wheel, add="+")
+            self.root.bind_class("TCombobox", seq, self._on_wheel)  # replaces the value-changing default
+
+    @staticmethod
+    def _wheel_units(event: tk.Event) -> int:
+        if getattr(event, "num", None) == 4:
+            return -3
+        if getattr(event, "num", None) == 5:
+            return 3
+        delta = getattr(event, "delta", 0)
+        if not delta:
+            return 0
+        return -3 if delta > 0 else 3  # Windows: ±120 per notch; macOS: small values
+
+    def _on_wheel(self, event: tk.Event) -> str | None:
+        widget = event.widget
+        if isinstance(widget, str):  # bind_all may hand us a path name
+            widget = self.root.nametowidget(widget)
+        if isinstance(widget, (ttk.Treeview, tk.Text, tk.Listbox)):
+            return None  # scrolls itself
+        node: tk.Misc | None = widget
+        while node is not None and not getattr(node, "wheel_scrollable", False):
+            node = node.master
+        if node is None:
+            return None
+        units = self._wheel_units(event)
+        if units:
+            node.yview_scroll(units, "units")  # type: ignore[attr-defined]
+        return "break" if isinstance(widget, ttk.Combobox) else None
 
     # ── Cross-thread plumbing ────────────────────────────────────────
 
