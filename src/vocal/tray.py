@@ -1,13 +1,21 @@
-"""System tray icon — wraps pystray, isolates the engine from the GUI toolkit.
+"""System tray icon — wraps pystray, isolates the app from the GUI toolkit.
 
-The engine never imports pystray directly. All GUI-toolkit touchpoints live
-here so a future swap (e.g. direct AyatanaAppIndicator3 via gi) only requires
-replacing this file.
+The menu is deliberately small (status, Open, Pause/Resume, Stop speaking,
+Quit); everything else lives in the GUI window. Two ways to run:
+
+- ``run()``: blocks the calling (main) thread on pystray's own loop. Used in
+  headless mode.
+- ``run_detached()``: spawns a "tray" thread that imports pystray, builds the
+  icon and — on Linux — runs a GLib main loop of our own, because pystray's
+  GTK backends do not spin one when detached. Everything GTK then happens on
+  that single thread (pystray schedules its updates via ``idle_add``). Used
+  in GUI mode, where Tk owns the main thread.
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from collections.abc import Callable
 from importlib.resources import files
@@ -41,14 +49,6 @@ _STATE_LABEL: dict[DictationState, str] = {
     DictationState.TRANSCRIBING: "Transcribing...",
 }
 
-# Models shown in the tray submenu, ordered by size.
-_TRAY_MODELS: list[str] = [
-    "tiny.en", "base.en", "small.en", "medium.en",
-    "tiny", "base", "small", "medium",
-    "large-v3",
-    "distil-small.en", "distil-medium.en", "distil-large-v3",
-]
-
 
 def _load_image(filename: str) -> "PILImage":
     """Load a packaged PNG asset. Raises FileNotFoundError with a clear message."""
@@ -59,28 +59,12 @@ def _load_image(filename: str) -> "PILImage":
         return Image.open(f).copy()  # copy() detaches from the file handle
 
 
-def _get_input_devices() -> list[tuple[int, str, bool]]:
-    """Return [(index, name, is_system_default)] for all input-capable devices."""
-    try:
-        import sounddevice as sd
-
-        default_input = sd.default.device[0]
-        return [
-            (i, dev["name"], i == default_input)
-            for i, dev in enumerate(sd.query_devices())
-            if dev["max_input_channels"] > 0
-        ]
-    except Exception:
-        logger.exception("Failed to query audio devices")
-        return []
-
-
 class TrayIcon:
     """Thread-safe wrapper around pystray.Icon.
 
     - Construct it on any thread.
-    - Call `run()` on the **main thread** — it blocks until `stop()` is invoked.
-    - Call `set_state()`, `stop()`, and the menu-callback setters from any thread.
+    - Call ``run()`` on the main thread (blocks) **or** ``run_detached()``.
+    - ``set_state()``, ``set_speaking()`` and ``stop()`` are safe from any thread.
     """
 
     def __init__(
@@ -88,25 +72,13 @@ class TrayIcon:
         *,
         on_toggle_pause: Callable[[], None],
         on_quit: Callable[[], None],
-        on_select_device: Callable[[int | None], None],
-        on_select_model: Callable[[str], None],
-        on_switch_mode: Callable[[str], None],
-        on_open_phrasebook: Callable[[], None],
-        on_select_voice: Callable[[str], None] | None = None,
         on_stop_speaking: Callable[[], None] | None = None,
-        current_model: str = "small.en",
-        current_mode: str = "live",
-        current_device: int | None = None,
-        current_voice: str | None = None,
+        on_open: Callable[[], None] | None = None,
     ) -> None:
         self._on_toggle_pause = on_toggle_pause
         self._on_quit = on_quit
-        self._on_select_device = on_select_device
-        self._on_select_model = on_select_model
-        self._on_switch_mode = on_switch_mode
-        self._on_open_phrasebook = on_open_phrasebook
-        self._on_select_voice = on_select_voice
         self._on_stop_speaking = on_stop_speaking
+        self._on_open = on_open
 
         self._state: DictationState = DictationState.LISTENING
         self._state_lock = threading.Lock()
@@ -114,14 +86,15 @@ class TrayIcon:
         # we can be Listening *and* Speaking.
         self._speaking = False
 
-        self._current_device: int | None = current_device
-        self._current_model: str = current_model
-        self._current_mode: str = current_mode
-        self._current_voice: str | None = current_voice
-
         self._images: dict[DictationState, object] = {}
         self._icon: "pystray.Icon | None" = None
         self._stop_requested = False
+
+        # run_detached() bookkeeping
+        self._thread: threading.Thread | None = None
+        self._loop: object | None = None  # GLib.MainLoop on Linux
+        self._ready = threading.Event()
+        self._detached_ok = False
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -131,7 +104,6 @@ class TrayIcon:
             if self._state == state:
                 return
             self._state = state
-
         self._refresh_icon()
 
     def set_speaking(self, speaking: bool) -> None:
@@ -142,6 +114,110 @@ class TrayIcon:
             self._speaking = speaking
         self._refresh_icon()
 
+    def run(self) -> None:
+        """Block on the tray event loop. Must be called from the main thread."""
+        import pystray  # noqa: F401
+
+        if self._stop_requested:
+            logger.info("Tray stop requested before run; skipping loop")
+            return
+        icon = self._create_icon()
+        logger.info("Tray icon starting (initial state: %s)", self._state.value)
+        # Handle the stop-before-icon-exists race: if stop() was called in the
+        # tiny window between the check above and Icon() construction, call
+        # icon.stop() immediately to mark it for exit.
+        if self._stop_requested:
+            try:
+                icon.stop()
+            except Exception:
+                pass
+        icon.run()  # blocks until stop() is called
+        logger.info("Tray icon run loop returned")
+
+    def run_detached(self, timeout: float = 10.0) -> bool:
+        """Start the icon on a background thread. Returns False if no tray could
+        be shown (macOS, missing backend, no session bus…) — the caller then
+        runs without one."""
+        if sys.platform == "darwin":
+            # pystray's Cocoa backend needs the NSApplication that Tk owns, and
+            # fails silently rather than raising; don't pretend we have a tray.
+            logger.info("Tray disabled on macOS in GUI mode")
+            return False
+        if self._thread is not None:
+            return self._detached_ok
+        self._thread = threading.Thread(target=self._detached_main, name="tray", daemon=True)
+        self._thread.start()
+        if not self._ready.wait(timeout):
+            logger.warning("Tray did not become ready within %.0fs; continuing without it", timeout)
+            return False
+        return self._detached_ok
+
+    def stop(self) -> None:
+        """Signal the tray loop to exit. Safe from any thread."""
+        self._stop_requested = True
+        loop = self._loop
+        if loop is not None:
+            from gi.repository import GLib
+            GLib.idle_add(loop.quit)  # type: ignore[attr-defined]
+        icon = self._icon
+        if icon is not None:
+            try:
+                icon.stop()  # no-op for a detached GTK icon; needed for run()/win32
+            except Exception:
+                logger.exception("Error stopping tray icon")
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                logger.warning("Tray thread did not exit")
+
+    # ── Internal: construction / loops ──────────────────────────────
+
+    def _create_icon(self) -> "pystray.Icon":
+        import pystray
+
+        # Pre-load all images so state changes don't hit disk during a transition.
+        for st, fname in _ASSET_FOR_STATE.items():
+            try:
+                self._images[st] = _load_image(fname)
+            except Exception:
+                logger.exception("Missing tray asset %s for state %s", fname, st.value)
+        self._icon = pystray.Icon(
+            APP_NAME,
+            icon=self._image_for(self._state),
+            title=self._title(),
+            menu=self._build_menu(),
+        )
+        return self._icon
+
+    def _detached_main(self) -> None:
+        # Import + construction must happen here: pystray's GTK backend calls
+        # Gtk.init_check() at import and AppIndicator.Indicator.new() in
+        # Icon.__init__ on the calling thread, and its _initialize() would
+        # reset SIGINT to default if it ran on the main thread.
+        assert threading.current_thread() is not threading.main_thread()
+        try:
+            icon = self._create_icon()
+            if sys.platform == "linux":
+                from gi.repository import GLib
+                self._loop = GLib.MainLoop()
+                icon.run_detached()
+                self._detached_ok = True
+                self._ready.set()
+                logger.info("Tray icon running detached (GLib loop on tray thread)")
+                self._loop.run()  # type: ignore[attr-defined]
+                logger.info("Tray GLib loop exited")
+            else:
+                icon.run_detached()  # win32: pystray spawns its own message loop thread
+                self._detached_ok = True
+                self._ready.set()
+        except Exception:
+            logger.exception("Tray icon failed to start; continuing without a tray")
+            self._icon = None
+            self._ready.set()
+
+    # ── Internal helpers ────────────────────────────────────────────
+
     def _title(self) -> str:
         with self._state_lock:
             label = _STATE_LABEL[self._state]
@@ -151,7 +227,7 @@ class TrayIcon:
     def _refresh_icon(self) -> None:
         icon = self._icon
         if icon is None:
-            return  # run() hasn't been called yet; initial state picked up on start
+            return  # not running yet; initial state picked up on start
         with self._state_lock:
             state = DictationState.TRANSCRIBING if self._speaking else self._state
         try:
@@ -161,55 +237,6 @@ class TrayIcon:
         except Exception:
             logger.exception("Failed to update tray for state %s", state.value)
 
-    def run(self) -> None:
-        """Block on the tray event loop. Must be called from the main thread."""
-        import pystray
-
-        if self._stop_requested:
-            logger.info("Tray stop requested before run; skipping loop")
-            return
-
-        # Pre-load all images so state changes don't hit disk during a transition.
-        for st, fname in _ASSET_FOR_STATE.items():
-            try:
-                self._images[st] = _load_image(fname)
-            except Exception:
-                logger.exception("Missing tray asset %s for state %s", fname, st.value)
-
-        initial_state = self._state
-        self._icon = pystray.Icon(
-            APP_NAME,
-            icon=self._image_for(initial_state),
-            title=self._title(),
-            menu=self._build_menu(),
-        )
-        logger.info("Tray icon starting (initial state: %s)", initial_state.value)
-
-        # Handle the stop-before-icon-exists race: if stop() was called in the
-        # tiny window between the _stop_requested check above and Icon()
-        # construction, call icon.stop() immediately to mark it for exit.
-        if self._stop_requested:
-            try:
-                self._icon.stop()
-            except Exception:
-                pass
-
-        self._icon.run()  # blocks until stop() is called
-        logger.info("Tray icon run loop returned")
-
-    def stop(self) -> None:
-        """Signal the tray loop to exit. Safe from any thread."""
-        self._stop_requested = True
-        icon = self._icon
-        if icon is None:
-            return
-        try:
-            icon.stop()
-        except Exception:
-            logger.exception("Error stopping tray icon")
-
-    # ── Internal helpers ────────────────────────────────────────────
-
     def _image_for(self, state: DictationState) -> object:
         return self._images.get(state) or self._images.get(DictationState.LISTENING)
 
@@ -217,228 +244,45 @@ class TrayIcon:
         with self._state_lock:
             return self._state
 
-    def _update_menu(self) -> None:
-        """Re-evaluate dynamic menu state (radio buttons, labels)."""
-        icon = self._icon
-        if icon is not None:
-            icon.update_menu()
-
-    def _rebuild_menu(self) -> None:
-        """Rebuild the entire menu (e.g. when the device list may have changed)."""
-        icon = self._icon
-        if icon is not None:
-            icon.menu = self._build_menu()
-            icon.update_menu()
-
-    # ── Selection handlers (tray click → update state → fire callback) ──
-
-    def _select_device(self, device_index: int | None) -> None:
-        if self._current_device == device_index:
+    def _call(self, name: str, fn: Callable[[], None] | None) -> None:
+        if fn is None:
             return
-        self._current_device = device_index
         try:
-            self._on_select_device(device_index)
+            fn()
         except Exception:
-            logger.exception("device selection callback raised")
-        self._rebuild_menu()  # device list may have changed
-
-    def _select_model(self, model_name: str) -> None:
-        if self._current_model == model_name:
-            return
-        self._current_model = model_name
-        try:
-            self._on_select_model(model_name)
-        except Exception:
-            logger.exception("model selection callback raised")
-        self._update_menu()
-
-    def _select_mode(self, mode: str) -> None:
-        if self._current_mode == mode:
-            return
-        self._current_mode = mode
-        try:
-            self._on_switch_mode(mode)
-        except Exception:
-            logger.exception("mode switch callback raised")
-        self._update_menu()
-
-    def _select_voice(self, voice: str) -> None:
-        if self._current_voice == voice or self._on_select_voice is None:
-            return
-        self._current_voice = voice
-        try:
-            self._on_select_voice(voice)
-        except Exception:
-            logger.exception("voice selection callback raised")
-        self._rebuild_menu()  # download marks may change
+            logger.exception("%s callback raised", name)
 
     # ── Menu construction ───────────────────────────────────────────
 
     def _build_menu(self) -> "pystray.Menu":
         import pystray
 
-        # ── Status (read-only) ──────────────────────────────────────
         def status_text(_item: object) -> str:
             label = _STATE_LABEL[self._current_state()]
             return f"Status: {'Speaking · ' if self._speaking else ''}{label}"
 
-        # ── Pause / Resume ──────────────────────────────────────────
         def pause_text(_item: object) -> str:
             return "Resume" if self._current_state() == DictationState.SLEEPING else "Pause"
 
-        def on_pause_clicked(_icon: object, _item: object) -> None:
-            try:
-                self._on_toggle_pause()
-            except Exception:
-                logger.exception("pause callback raised")
-
-        # ── Audio Device submenu ────────────────────────────────────
-        def _dev_action(i: int | None) -> Callable:
-            def _cb(_icon: object, _item: object) -> None:
-                self._select_device(i)
-            return _cb
-
-        def _dev_checked(i: int | None) -> Callable:
-            def _cb(_item: object) -> bool:
-                return self._current_device == i
-            return _cb
-
-        devices = _get_input_devices()
-        device_items: list = [
-            pystray.MenuItem(
-                "Default",
-                _dev_action(None),
-                checked=_dev_checked(None),
-                radio=True,
-            ),
-        ]
-        if devices:
-            device_items.append(pystray.Menu.SEPARATOR)
-            for idx, name, is_default in devices:
-                label = f"{name} (system default)" if is_default else name
-                device_items.append(pystray.MenuItem(
-                    label,
-                    _dev_action(idx),
-                    checked=_dev_checked(idx),
-                    radio=True,
-                ))
-
-        # ── Model submenu ───────────────────────────────────────────
-        def _model_action(m: str) -> Callable:
-            def _cb(_icon: object, _item: object) -> None:
-                self._select_model(m)
-            return _cb
-
-        def _model_checked(m: str) -> Callable:
-            def _cb(_item: object) -> bool:
-                return self._current_model == m
-            return _cb
-
-        model_items = []
-        for model_name in _TRAY_MODELS:
-            model_items.append(pystray.MenuItem(
-                model_name,
-                _model_action(model_name),
-                checked=_model_checked(model_name),
-                radio=True,
-            ))
-
-        # ── Mode submenu ────────────────────────────────────────────
-        def _mode_action(m: str) -> Callable:
-            def _cb(_icon: object, _item: object) -> None:
-                self._select_mode(m)
-            return _cb
-
-        def _mode_checked(m: str) -> Callable:
-            def _cb(_item: object) -> bool:
-                return self._current_mode == m
-            return _cb
-
-        mode_items = [
-            pystray.MenuItem(
-                "Live (always listening)",
-                _mode_action("live"),
-                checked=_mode_checked("live"),
-                radio=True,
-            ),
-            pystray.MenuItem(
-                "Hotkey (push to talk)",
-                _mode_action("hotkey"),
-                checked=_mode_checked("hotkey"),
-                radio=True,
-            ),
-        ]
-
-        # ── Voice submenu (text-to-speech) ──────────────────────────
-        def _voice_action(v: str) -> Callable:
-            def _cb(_icon: object, _item: object) -> None:
-                self._select_voice(v)
-            return _cb
-
-        def _voice_checked(v: str) -> Callable:
-            def _cb(_item: object) -> bool:
-                return self._current_voice == v
-            return _cb
-
-        voice_items: list = []
-        if self._on_select_voice is not None:
-            from vocal.output.models import VOICES, is_downloaded
-
-            by_backend: dict[str, list] = {}
-            for spec in VOICES.values():
-                by_backend.setdefault(spec.backend, []).append(spec)
-            for backend, specs in by_backend.items():
-                if voice_items:
-                    voice_items.append(pystray.Menu.SEPARATOR)
-                voice_items.append(pystray.MenuItem(backend.capitalize(), None, enabled=False))
-                for spec in specs:
-                    label = spec.name if is_downloaded(spec) else f"{spec.name}  (not downloaded)"
-                    voice_items.append(pystray.MenuItem(
-                        label,
-                        _voice_action(spec.name),
-                        checked=_voice_checked(spec.name),
-                        radio=True,
-                    ))
-
-        def on_stop_speaking_clicked(_icon: object, _item: object) -> None:
-            if self._on_stop_speaking is None:
-                return
-            try:
-                self._on_stop_speaking()
-            except Exception:
-                logger.exception("stop speaking callback raised")
-
-        speech_items: list = []
-        if voice_items:
-            speech_items.append(pystray.MenuItem("Voice", pystray.Menu(*voice_items)))
-        if self._on_stop_speaking is not None:
-            speech_items.append(pystray.MenuItem(
-                "Stop speaking", on_stop_speaking_clicked,
-                enabled=lambda _item: self._speaking,
-            ))
-        if speech_items:
-            speech_items.append(pystray.Menu.SEPARATOR)
-
-        # ── Quit ────────────────────────────────────────────────────
-        def on_quit_clicked(_icon: object, _item: object) -> None:
-            try:
-                self._on_quit()
-            except Exception:
-                logger.exception("quit callback raised")
-
-        return pystray.Menu(
+        items: list = [
             pystray.MenuItem(status_text, None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(pause_text, on_pause_clicked),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Audio Device", pystray.Menu(*device_items)),
-            pystray.MenuItem("Model", pystray.Menu(*model_items)),
-            pystray.MenuItem("Mode", pystray.Menu(*mode_items)),
-            pystray.Menu.SEPARATOR,
-            *speech_items,
-            pystray.MenuItem(
-                "Edit Phrasebook",
-                lambda _icon, _item: self._on_open_phrasebook(),
-            ),
-            pystray.MenuItem("Quit", on_quit_clicked),
-        )
+        ]
+        if self._on_open is not None:
+            items.append(pystray.MenuItem(
+                "Open Vocal",
+                lambda _icon, _item: self._call("open", self._on_open),
+                default=True,
+            ))
+        items.append(pystray.MenuItem(
+            pause_text, lambda _icon, _item: self._call("pause", self._on_toggle_pause),
+        ))
+        if self._on_stop_speaking is not None:
+            items.append(pystray.MenuItem(
+                "Stop speaking",
+                lambda _icon, _item: self._call("stop speaking", self._on_stop_speaking),
+                enabled=lambda _item: self._speaking,
+            ))
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem("Quit", lambda _icon, _item: self._call("quit", self._on_quit)))
+        return pystray.Menu(*items)

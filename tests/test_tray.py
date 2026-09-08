@@ -1,25 +1,21 @@
-"""TrayIcon state bookkeeping that doesn't need a display or pystray."""
+"""TrayIcon state bookkeeping and menu shape (no display needed)."""
 
 from __future__ import annotations
 
 import threading
+
+import pytest
 
 from vocal.state import DictationState
 from vocal.tray import TrayIcon
 
 
 def _tray(**kw) -> tuple[TrayIcon, dict]:
-    calls: dict[str, list] = {"voice": [], "stop": []}
+    calls: dict[str, list] = {"pause": [], "stop": [], "quit": [], "open": []}
     tray = TrayIcon(
-        on_toggle_pause=lambda: None,
-        on_quit=lambda: None,
-        on_select_device=lambda i: None,
-        on_select_model=lambda m: None,
-        on_switch_mode=lambda m: None,
-        on_open_phrasebook=lambda: None,
-        on_select_voice=lambda v: calls["voice"].append(v),
+        on_toggle_pause=lambda: calls["pause"].append(True),
+        on_quit=lambda: calls["quit"].append(True),
         on_stop_speaking=lambda: calls["stop"].append(True),
-        current_voice="piper-en-lessac-medium",
         **kw,
     )
     return tray, calls
@@ -45,11 +41,43 @@ def test_set_speaking_from_other_thread() -> None:
     assert tray._speaking is True
 
 
-def test_select_voice_fires_callback_once() -> None:
-    tray, calls = _tray()
-    tray._select_voice("piper-en-lessac-medium")  # already current
-    assert calls["voice"] == []
-    tray._select_voice("kokoro-af_sarah")
-    tray._select_voice("kokoro-af_sarah")
-    assert calls["voice"] == ["kokoro-af_sarah"]
-    assert tray._current_voice == "kokoro-af_sarah"
+def _menu_labels(menu) -> list[str]:
+    out = []
+    for item in menu.items:
+        text = str(item)
+        out.append(text)
+    return out
+
+
+def test_menu_is_slim_and_open_is_optional() -> None:
+    pytest.importorskip("pystray")
+    tray, calls = _tray(on_open=lambda: calls["open"].append(True))
+    labels = _menu_labels(tray._build_menu())
+    # status, sep, Open, Pause, Stop speaking, sep, Quit
+    assert labels == ["Status: Listening", "- - - -", "Open Vocal", "Pause", "Stop speaking", "- - - -", "Quit"]
+
+    headless, _ = _tray()
+    assert "Open Vocal" not in _menu_labels(headless._build_menu())
+
+
+def test_menu_callbacks_route_to_app() -> None:
+    pystray = pytest.importorskip("pystray")
+    tray, calls = _tray(on_open=lambda: calls["open"].append(True))
+    tray.set_speaking(True)
+    by_label = {str(i): i for i in tray._build_menu().items}
+    for label, key in (("Open Vocal", "open"), ("Pause", "pause"), ("Stop speaking", "stop"), ("Quit", "quit")):
+        by_label[label](None)  # pystray MenuItem.__call__(icon)
+        assert calls[key] == [True], label
+    assert by_label["Stop speaking"].enabled is True
+    tray.set_speaking(False)
+    tray.set_state(DictationState.SLEEPING)
+    labels = _menu_labels(tray._build_menu())
+    assert "Resume" in labels and "Status: Paused" in labels
+    assert isinstance(pystray.Menu.SEPARATOR, pystray.MenuItem)
+
+
+def test_run_detached_reports_false_on_darwin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("vocal.tray.sys.platform", "darwin")
+    tray, _ = _tray()
+    assert tray.run_detached() is False
+    assert tray._thread is None

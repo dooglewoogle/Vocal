@@ -18,7 +18,7 @@ def _args(**kw) -> argparse.Namespace:
 @pytest.mark.parametrize(
     "kw,expected",
     [
-        ({}, "live"),
+        ({}, None),
         ({"hotkey": True}, "hotkey"),
         ({"live": True}, "live"),
         ({"mode": "ptt"}, "hotkey"),
@@ -74,3 +74,29 @@ def test_models_parsing():
 def test_stop_status_parsing():
     assert parse_args(["stop"]).command == "stop"
     assert parse_args(["status"]).command == "status"
+
+
+def test_headless_flag() -> None:
+    from vocal.cli import parse_args
+
+    assert parse_args(["--headless"]).headless is True
+    assert parse_args([]).headless is False
+
+
+def test_cli_overrides_report_paths() -> None:
+    from vocal.cli import _apply_cli_overrides, parse_args
+    from vocal.config import VocalConfig
+
+    cfg = VocalConfig()
+    args = parse_args(["--mode", "ptt", "--key", "END", "--phrasebook", "--model", "tiny.en"])
+    touched = _apply_cli_overrides(cfg, args)
+    assert cfg.input.engine == "hotkey" and cfg.input.hotkey.mode == "ptt"
+    assert cfg.input.hotkey.key == "END" and cfg.input.phrasebook.seed is True
+    assert cfg.input.model.size == "tiny.en"
+    assert touched == {"input.engine", "input.hotkey.mode", "input.hotkey.key",
+                       "input.phrasebook.seed", "input.model.size"}
+
+    cfg2 = VocalConfig()
+    cfg2.input.engine = "hotkey"
+    assert _apply_cli_overrides(cfg2, parse_args([])) == set()
+    assert cfg2.input.engine == "hotkey"  # file value survives when no flag given

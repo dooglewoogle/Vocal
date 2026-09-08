@@ -202,3 +202,17 @@ def check_tray_dependencies() -> list[str]:
         missing.append(f"pystray (pip install pystray) — {e}")
 
     return missing
+
+
+def check_gui_dependencies() -> list[str]:
+    """Check for the settings-window toolkit. Returns human-readable missing items.
+
+    Imports tkinter only (no window is created, so this is safe without a
+    display); a missing display surfaces later when the window is built.
+    """
+    try:
+        import tkinter  # noqa: F401
+    except ImportError as e:
+        hint = "apt install python3-tk" if sys.platform == "linux" else "install Tcl/Tk for your Python"
+        return [f"tkinter ({hint}) — {e}"]
+    return []

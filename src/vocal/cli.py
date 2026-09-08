@@ -12,18 +12,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import signal
-import subprocess
 import sys
-import threading
-from collections.abc import Callable
 from pathlib import Path
 
-from vocal.config import CONFIG_DIR, CONFIG_PATH, ConfigError, VocalConfig, load_config
-from vocal.state import DictationState
-from vocal.input.phrasebook import Phrasebook
+from vocal.config import CONFIG_PATH, ConfigError, VocalConfig, load_config
 from vocal.utils import (
     check_dependencies,
+    check_gui_dependencies,
     check_tray_dependencies,
     log_startup_banner,
     setup_logging,
@@ -125,6 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--benchmark-mic", action="store_true",
         help="Use live mic input for benchmark instead of synthetic audio",
     )
+    parser.add_argument(
+        "--headless", action="store_true",
+        help="Run without the settings window (tray icon only)",
+    )
     # ── Output (speech) flags ──
     parser.add_argument(
         "--no-server", action="store_true",
@@ -171,20 +170,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def list_audio_devices() -> None:
     """Print available audio input and output devices."""
-    import sounddevice as sd
+    from vocal.input.audio import list_input_devices
+    from vocal.output.playback import list_output_devices
 
     print("Available audio input devices:\n")
-    for i, dev in enumerate(sd.query_devices()):
-        if dev["max_input_channels"] > 0:
-            default = " (default)" if i == sd.default.device[0] else ""
-            print(f"  [{i}] {dev['name']}{default}")
-            print(f"       channels={dev['max_input_channels']}, rate={dev['default_samplerate']}")
+    for i, name, is_default in list_input_devices():
+        print(f"  [{i}] {name}{' (default)' if is_default else ''}")
     print("\nAvailable audio output devices:\n")
-    for i, dev in enumerate(sd.query_devices()):
-        if dev["max_output_channels"] > 0:
-            default = " (default)" if i == sd.default.device[1] else ""
-            print(f"  [{i}] {dev['name']}{default}")
-            print(f"       channels={dev['max_output_channels']}, rate={dev['default_samplerate']}")
+    for i, name, is_default in list_output_devices():
+        print(f"  [{i}] {name}{' (default)' if is_default else ''}")
     print()
 
 
@@ -202,42 +196,6 @@ def _load_config_or_exit(args: argparse.Namespace) -> VocalConfig:
     if getattr(args, "no_server", False):
         config.output.server.enabled = False
     return config
-
-
-def _install_shutdown_handlers(on_shutdown: Callable[[], None]) -> None:
-    """Wire SIGINT/SIGTERM to the shutdown callback.
-
-    On Linux the tray runs a GTK main loop; plain signal.signal handlers
-    won't be delivered promptly (GLib doesn't yield to Python's handler
-    between iterations). GLib.unix_signal_add routes signals through the
-    same loop that pystray is using, so they fire cleanly.
-
-    On other platforms, fall back to signal.signal — pystray's Cocoa /
-    Win32 backends handle this adequately for now.
-    """
-    if sys.platform == "linux":
-        try:
-            import gi
-            gi.require_version("GLib", "2.0")
-            from gi.repository import GLib
-
-            def _glib_handler(*_args: object) -> bool:
-                on_shutdown()
-                return False  # GLib removes the source after False
-
-            GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, _glib_handler)
-            GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, _glib_handler)
-            logger.debug("Installed GLib signal handlers for SIGINT/SIGTERM")
-            return
-        except (ImportError, ValueError) as e:
-            logger.warning("GLib signal install failed (%s); using signal.signal", e)
-
-    def _py_handler(_signum: int, _frame: object) -> None:
-        on_shutdown()
-
-    signal.signal(signal.SIGINT, _py_handler)
-    if hasattr(signal, "SIGTERM"):
-        signal.signal(signal.SIGTERM, _py_handler)
 
 
 def _fail_missing(missing: list[str], missing_tray: list[str]) -> None:
@@ -262,11 +220,13 @@ def _fail_missing(missing: list[str], missing_tray: list[str]) -> None:
     sys.exit(1)
 
 
-def _resolve_initial_mode(args: argparse.Namespace) -> str:
-    """Pick the starting engine: "live" or "hotkey".
+def _resolve_initial_mode(args: argparse.Namespace) -> str | None:
+    """Engine requested on the command line: "live", "hotkey", or None.
 
     --hotkey / --live are explicit. Without either, --mode or --duck imply
     hotkey mode, since both are meaningless as dictation controls in live mode.
+    None means nothing was asked for, so the config file's ``input.engine``
+    (or its default) applies.
     """
     if args.hotkey:
         return "hotkey"
@@ -277,7 +237,7 @@ def _resolve_initial_mode(args: argparse.Namespace) -> str:
     if args.mode or args.duck:
         logger.info("Inferred hotkey mode from --mode/--duck (pass --live to override)")
         return "hotkey"
-    return "live"
+    return None
 
 
 # ── Speech subcommands ──────────────────────────────────────────────
@@ -372,221 +332,83 @@ def _cmd_models(args: argparse.Namespace) -> int:
 # ── Daemon ──────────────────────────────────────────────────────────
 
 
-def _run_with_tray(
-    config: VocalConfig,
-    args: argparse.Namespace,
-    phrasebook: Phrasebook | None,
-) -> None:
-    """Main-thread flow: construct tray + engine + speech, wire shutdown, run."""
-    from vocal.input.audio import resolve_device
-    from vocal.input.base_engine import BaseDictationEngine
-    from vocal.output.speech import SpeechController
-    from vocal.tray import TrayIcon
+def _apply_cli_overrides(config: VocalConfig, args: argparse.Namespace) -> set[str]:
+    """Copy command-line flags onto ``config``. Returns the dotted paths touched,
+    so the GUI can tell the user which values did not come from the file."""
+    touched: set[str] = set()
 
-    shutdown_started = threading.Event()
-    switching_mode = threading.Event()
-    # Hold a reference to the engine so menu callbacks built before the engine
-    # exists can resolve it later.
-    holder: dict[str, object] = {}
+    def put(path: str, value: object) -> None:
+        obj = config
+        parts = path.split(".")
+        for part in parts[:-1]:
+            obj = getattr(obj, part)
+        setattr(obj, parts[-1], value)
+        touched.add(path)
 
-    def request_shutdown() -> None:
-        if switching_mode.is_set():
-            return  # suppress during mode switch
-        if shutdown_started.is_set():
-            return
-        shutdown_started.set()
-        logger.info("Shutdown requested; stopping tray")
-        tray.stop()
+    if args.model:
+        put("input.model.size", args.model)
+    if args.compute_type:
+        put("input.model.compute_type", args.compute_type)
+    if args.beam_size is not None:
+        put("input.model.beam_size", args.beam_size)
+    if args.key:
+        put("input.hotkey.key", args.key)
+    if args.mode:
+        put("input.hotkey.mode", args.mode)
+    if args.duck:
+        put("input.hotkey.duck", True)
+    if args.duck_amount is not None:
+        put("input.hotkey.duck_amount", args.duck_amount)
+    if args.output:
+        put("input.inject.method", args.output)
+    if args.hotkey_backend:
+        put("input.hotkey.backend", args.hotkey_backend)
+    if args.silence_ms is not None:
+        put("input.live.min_silence_duration_ms", args.silence_ms)
+    if args.phrasebook:
+        put("input.phrasebook.seed", True)
+    if args.phrasebook_replace:
+        put("input.phrasebook.replace", True)
+    mode = _resolve_initial_mode(args)
+    if mode is not None:
+        put("input.engine", mode)
+    if args.log_level:
+        put("log_level", args.log_level)
+    # Speech flags are applied in _load_config_or_exit (shared with `vocal say`).
+    if getattr(args, "voice", None):
+        touched.add("output.speech.voice")
+    if getattr(args, "tts_backend", None):
+        touched.add("output.speech.backend")
+    if getattr(args, "no_server", False):
+        touched.add("output.server.enabled")
+    return touched
 
-    # ── Engine factory ──────────────────────────────────────────────
 
-    def _make_engine(mode: str) -> BaseDictationEngine:
-        if mode == "live":
-            from vocal.input.live import LiveDictationEngine
-            return LiveDictationEngine(
-                config, phrasebook, args.phrasebook, args.phrasebook_replace,
-                on_state_change=tray.set_state,
-                on_shutdown_requested=request_shutdown,
-            )
-        else:
-            from vocal.input.engine import DictationEngine
-            return DictationEngine(
-                config, phrasebook, args.phrasebook, args.phrasebook_replace,
-                on_state_change=tray.set_state,
-                on_shutdown_requested=request_shutdown,
-                # Pressing the hotkey while speech plays cuts the speech first,
-                # synchronously, so the mic never records it and hotkey-mode
-                # ducking never fights active playback.
-                on_before_record=lambda: speech.stop(),
-            )
+def _run_daemon(config: VocalConfig, overridden: set[str], headless: bool) -> None:
+    from vocal.app import VocalApp
 
-    # ── Tray callbacks ──────────────────────────────────────────────
+    app = VocalApp(config, cli_overridden=overridden)
+    if headless:
+        from vocal.tray import TrayIcon
 
-    def on_toggle_pause() -> None:
-        engine = holder.get("engine")
-        toggle = getattr(engine, "toggle_pause", None)
-        if callable(toggle):
-            toggle()
-        else:
-            logger.info("Pause requested — not supported in this mode")
-
-    def on_select_device(device_index: int | None) -> None:
-        engine = holder.get("engine")
-        switch = getattr(engine, "switch_device", None)
-        if callable(switch):
-            switch(device_index)
-
-    def on_select_model(model_name: str) -> None:
-        engine = holder.get("engine")
-        switch = getattr(engine, "switch_model", None)
-        if callable(switch):
-            switch(model_name)
-
-    def on_switch_mode(mode: str) -> None:
-        switching_mode.set()
+        tray = TrayIcon(
+            on_toggle_pause=app.toggle_pause,
+            on_stop_speaking=app.stop_speaking,
+            on_quit=app.request_shutdown,
+        )
+        app.on_state.connect(tray.set_state)
+        app.on_speaking.connect(tray.set_speaking)
+        app.start(quit_loop=tray.stop)
+        app.install_signal_handlers(glib=True)
         try:
-            old_engine = holder.get("engine")
-            if old_engine:
-                old_engine.shutdown()  # type: ignore[union-attr]
-
-            new_engine = _make_engine(mode)
-            holder["engine"] = new_engine
-            new_engine.start()
-            tray.set_state(DictationState.LISTENING)
-            logger.info("Switched to %s mode", mode)
-        except Exception:
-            logger.exception("Mode switch to %s failed", mode)
+            tray.run()  # blocks main; returns when tray.stop() is called
         finally:
-            switching_mode.clear()
+            app.shutdown()
+        return
 
-    def on_open_phrasebook() -> None:
-        from vocal.input.phrasebook import PHRASEBOOK_PATH
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        if not PHRASEBOOK_PATH.exists():
-            PHRASEBOOK_PATH.write_text(
-                "# Vocal Phrasebook — custom vocabulary and corrections\n"
-                "#\n"
-                "# [replacements]\n"
-                '# "mishearing" = "correct term"\n',
-            )
-        if sys.platform == "linux":
-            subprocess.Popen(["xdg-open", str(PHRASEBOOK_PATH)])
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(PHRASEBOOK_PATH)])
-        else:
-            import os
-            os.startfile(str(PHRASEBOOK_PATH))  # type: ignore[attr-defined]
+    from vocal.gui.window import run_gui
 
-    # ── Build tray + engine + speech ────────────────────────────────
-
-    initial_mode = _resolve_initial_mode(args)
-    if initial_mode == "hotkey":
-        logger.info("Starting in hotkey mode (%s, key=%s)", config.input.hotkey.mode, config.input.hotkey.key)
-    else:
-        logger.info("Starting in live mode")
-
-    tray = TrayIcon(
-        on_toggle_pause=on_toggle_pause,
-        on_quit=request_shutdown,
-        on_select_device=on_select_device,
-        on_select_model=on_select_model,
-        on_switch_mode=on_switch_mode,
-        on_open_phrasebook=on_open_phrasebook,
-        on_select_voice=lambda v: speech.set_voice(v),
-        on_stop_speaking=lambda: speech.stop(),
-        current_model=config.input.model.size,
-        current_mode=initial_mode,
-        current_device=resolve_device(config.input.audio.device),
-        current_voice=config.output.speech.voice,
-    )
-
-    # ── Speech output ↔ input coupling ──────────────────────────────
-    # While speaking: suppress the mic (so live mode doesn't transcribe the
-    # speaker) and duck other apps' streams (not ours — StreamDucker is
-    # per-stream; the master-volume Ducker would silence the speech too).
-
-    speech_cfg = config.output.speech
-    stream_ducker = None
-    if speech_cfg.duck:
-        from vocal.volume import StreamDucker
-        if StreamDucker.available():
-            stream_ducker = StreamDucker(speech_cfg.duck_amount)
-        else:
-            logger.warning("output.speech.duck requested but per-stream ducking needs pactl; ignoring")
-
-    release_timer: list[threading.Timer | None] = [None]
-
-    def _cancel_release() -> None:
-        t = release_timer[0]
-        if t is not None:
-            t.cancel()
-            release_timer[0] = None
-
-    def _release_input() -> None:
-        release_timer[0] = None
-        engine = holder.get("engine")
-        release = getattr(engine, "release_input", None)
-        if callable(release):
-            release()
-
-    def on_speech_start() -> None:
-        _cancel_release()
-        if speech_cfg.pause_input:
-            engine = holder.get("engine")
-            suppress = getattr(engine, "suppress_input", None)
-            if callable(suppress):
-                suppress()
-        if stream_ducker is not None:
-            # pactl round-trips take tens of ms; keep them off the audio path.
-            threading.Thread(target=stream_ducker.duck, name="stream-duck", daemon=True).start()
-        tray.set_speaking(True)
-
-    def on_speech_end() -> None:
-        if stream_ducker is not None:
-            threading.Thread(target=stream_ducker.restore, name="stream-restore", daemon=True).start()
-        tray.set_speaking(False)
-        if speech_cfg.pause_input:
-            _cancel_release()
-            t = threading.Timer(speech_cfg.pause_input_tail_ms / 1000.0, _release_input)
-            t.daemon = True
-            release_timer[0] = t
-            t.start()
-
-    speech = SpeechController(
-        speech_cfg,
-        on_speech_start=on_speech_start,
-        on_speech_end=on_speech_end,
-    )
-    engine = _make_engine(initial_mode)
-    holder["engine"] = engine
-
-    # Start accepting /say only once the engine exists, so the very first
-    # utterance can suppress the mic too (engine construction loads the VAD
-    # model and takes a second or two).
-    server = None
-    if config.output.server.enabled:
-        from vocal.output.server import SpeechServer
-        try:
-            server = SpeechServer(speech, config.output.server.host, config.output.server.port)
-            server.start()
-        except OSError as e:
-            logger.error("Speech server failed to start: %s", e)
-            server = None
-
-    _install_shutdown_handlers(request_shutdown)
-
-    engine.start()
-    try:
-        tray.run()  # blocks main; returns when tray.stop() is called
-    finally:
-        if server is not None:
-            server.stop()
-        speech.shutdown()
-        _cancel_release()
-        if stream_ducker is not None:
-            stream_ducker.restore()
-        engine.shutdown()
-        logger.info("Engine shutdown complete")
+    run_gui(app)
 
 
 def main() -> None:
@@ -615,40 +437,32 @@ def main() -> None:
         return
 
     config = _load_config_or_exit(args)
-
-    # Apply CLI overrides
-    if args.model:
-        config.input.model.size = args.model
-    if args.compute_type:
-        config.input.model.compute_type = args.compute_type
-    if args.beam_size is not None:
-        config.input.model.beam_size = args.beam_size
-    if args.key:
-        config.input.hotkey.key = args.key
-    if args.mode:
-        config.input.hotkey.mode = args.mode
-    if args.duck:
-        config.input.hotkey.duck = True
-    if args.duck_amount is not None:
-        config.input.hotkey.duck_amount = args.duck_amount
-    if args.output:
-        config.input.inject.method = args.output
-    if args.hotkey_backend:
-        config.input.hotkey.backend = args.hotkey_backend
-    if args.log_level:
-        config.log_level = args.log_level
-
-    if args.silence_ms is not None:
-        config.input.live.min_silence_duration_ms = args.silence_ms
+    overridden = _apply_cli_overrides(config, args)
 
     log_path = setup_logging(config.log_level)
     log_startup_banner(log_path)
 
+    headless = bool(args.headless)
+    if not headless:
+        missing_gui = check_gui_dependencies()
+        if missing_gui:
+            print(
+                "Settings window unavailable (" + "; ".join(missing_gui) + "); running headless.",
+                file=sys.stderr,
+            )
+            headless = True
+
     # Check system + tray dependencies together — fail fast with one message.
     missing = check_dependencies(config.input.inject.method)
     missing_tray = check_tray_dependencies()
-    if missing or missing_tray:
+    if missing or (missing_tray and headless):
         _fail_missing(missing, missing_tray)
+    if missing_tray:
+        print(
+            "Tray icon unavailable:\n  " + "\n  ".join(missing_tray)
+            + "\nRunning with the window only (closing it quits).",
+            file=sys.stderr,
+        )
 
     if config.input.hotkey.duck:
         from vocal.volume import candidate_tools, detect_backend
@@ -662,10 +476,4 @@ def main() -> None:
         else:
             logger.info("Ducking enabled: -%d%% via %s", config.input.hotkey.duck_amount, backend.tool)
 
-    # Load phrasebook if either flag is set
-    phrasebook = None
-    if args.phrasebook or args.phrasebook_replace:
-        from vocal.input.phrasebook import load_phrasebook
-        phrasebook = load_phrasebook()
-
-    _run_with_tray(config, args, phrasebook)
+    _run_daemon(config, overridden, headless)
