@@ -19,3 +19,9 @@ Patterns from user corrections. Read at session start.
 **Mistake:** grouped settings by config table (Hotkey, Speech, Server) rather than by the user's mental model (input side vs output side; ducking as its own concern).
 **Rule:** tabs and sections follow what the user is doing (dictating vs. making Vocal speak), and cross-cutting knobs (ducking) get their own section on each side. Config-table names are an implementation detail.
 **Trigger:** laying out a settings form from a dataclass — do not mirror the dataclass nesting.
+
+## 2026-09-08 — second settings review
+
+**Mistake:** kept `output.speech.backend` as a setting although the chosen voice already determines the backend; and used a "Show advanced" checkbox that sprinkled extra rows into every section.
+**Rule:** a config key that is derivable from another key is not a setting — delete it. Advanced options live in one collapsed block, not interleaved with basics; the basic block should be short enough to read at a glance.
+**Trigger:** any field whose value could be computed from the current config, or any UI toggle that changes the shape of several sections at once.

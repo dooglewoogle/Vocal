@@ -83,8 +83,8 @@ Tray icon: green when listening, grey when paused, amber when loading, transcrib
 | Tab | What it does |
 |-----|--------------|
 | **Status** | Current state (Loading / Listening / Recording / Transcribing / Paused, plus Speaking), a log of recent transcriptions, Pause/Resume and Stop speaking |
-| **Dictation** | Whisper model grid (cached models marked, pick the current one) and every input-side option: mode, microphone, hotkey, recording ducking, text insertion; voice detection and post-processing under **Show advanced** |
-| **Speech** | Voice grid (download, remove, test, pick the current one) and every output-side option: speed, volume, speaker, speaking ducking; server and log level under **Show advanced** |
+| **Dictation** | Whisper model grid (cached models marked, pick the current one), then Settings (mode, hotkey, sentence silence, recording ducking) and a collapsed **Advanced** block (model tuning, microphone, text insertion, post-processing, voice detection) |
+| **Speech** | Enable speech + host/port on the top row, the voice grid (download, remove, test, pick the current one), then Settings (speed, volume, speaker, speaking ducking) and a collapsed **Advanced** block (duck amount, pause-while-speaking, manual model path, log level) |
 | **Phrasebook** | Edit mishearing → correction rules and whether they seed recognition / correct output; saving applies them without a model reload |
 
 **Save & Apply** on a tab writes `config.toml` and applies the change live: speech settings take effect immediately, dictation settings restart the dictation engine (a few seconds while the Whisper model reloads).
@@ -171,7 +171,7 @@ Models are stored under `~/.cache/vocal/models/<backend>/` (macOS `~/Library/Cac
 
 Piper voices come from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) on Hugging Face. Kokoro files (`kokoro-v1.0.onnx` + `voices-v1.0.bin`) come from the [kokoro-onnx GitHub release](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.0) — the Hugging Face `onnx-community` export is a different, incompatible format.
 
-**Manual / offline install:** put the files anywhere and point `output.speech.model_path` at them — for Piper the `.onnx` file (with its `.onnx.json` alongside), for Kokoro the directory holding the `.onnx` and `voices*.bin`. `voice` still selects the backend (and the Kokoro speaker); the registry and downloader are bypassed.
+**Manual / offline install:** put the files anywhere and point `output.speech.model_path` at them — for Piper the `.onnx` file (with its `.onnx.json` alongside), for Kokoro the directory holding the `.onnx` and `voices*.bin`. `voice` selects the backend (and the Kokoro speaker); the registry and downloader are bypassed.
 
 ### Speaking
 
@@ -248,7 +248,6 @@ Dictation:
 
 Speech:
   --voice NAME              Default TTS voice for the daemon
-  --tts-backend {piper,kokoro,system}
   --no-server               Don't start the HTTP server
 
 Utilities:
@@ -304,8 +303,7 @@ remove_hallucinations = true
 
 # ── Output: speech ────────────────────────────────────────────
 [output.speech]
-backend = "piper"           # piper | kokoro | system (used with model_path)
-voice = "piper-en-lessac-medium"
+voice = "piper-en-lessac-medium"   # also decides the backend (piper / kokoro / system)
 # model_path = "~/voices/en_US-lessac-medium.onnx"   # manual install; bypasses download
 auto_download = true
 speed = 1.0

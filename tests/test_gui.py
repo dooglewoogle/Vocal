@@ -75,6 +75,10 @@ def test_every_config_leaf_is_owned_exactly_once() -> None:
     assert covered == leaves, f"missing={leaves - covered} extra={covered - leaves}"
     assert all(s.path.startswith("input.") for s in dictation_fields())
     assert all(not s.path.startswith("input.") for s in speech_fields())
+    # basic fields precede advanced ones so the Settings block reads top-down
+    for fl in (dictation_fields(), speech_fields()):
+        flags = [s.advanced for s in fl]
+        assert flags == sorted(flags), "advanced fields must come after basic ones"
     cfg = VocalConfig()
     for s in specs:
         get_path(cfg, s.path)  # resolves
@@ -185,39 +189,32 @@ def _clipped(widget) -> bool:
 
 @pytest.mark.parametrize("advanced", [False, True])
 def test_forms_lay_out_without_clipping(window, advanced) -> None:
-    """Numeric stand-in for a screenshot: every label/widget fits, sections keep their order."""
+    """Numeric stand-in for a screenshot: every visible label/widget fits; blocks are in order."""
     w, _ = window
     w.root.geometry("760x560")
     w.root.deiconify()
-    for tab, first_section in ((w.dictation, "Whisper model"), (w.speech, "Voice model")):
+    for tab in (w.dictation, w.speech):
         form = tab.form
         w.notebook.select(tab)
-        form._show_advanced.set(advanced)
-        form._toggle_advanced()
+        form.set_advanced(advanced)
         w.root.update_idletasks()
         w.root.update()
 
-        # Section order: grid box first, then the model section right under it.
-        packed = [c for c in form._form.pack_slaves()]
+        packed = form._form.pack_slaves()
         titles = [c.cget("text") for c in packed if isinstance(c, ttk.LabelFrame)]
-        assert titles[0] in ("Whisper models", "Voices"), titles
-        if advanced or first_section == "Whisper model":
-            assert titles[1] == first_section, titles
-        # Advanced-only sections hidden in basic mode
-        if not advanced:
-            assert "Voice detection" not in titles and "Server" not in titles
+        # header grid, then Settings; the Advanced block is a Collapsible, not a LabelFrame
+        assert titles[-2:] == (["Whisper models", "Settings"] if tab is w.dictation else ["Voices", "Settings"]), titles
+        assert form.advanced.body.winfo_ismapped() == advanced
+        if tab is w.speech:  # server row is the very first thing on the tab
+            assert form._widgets["output.server.enabled"].winfo_ismapped()
+            assert form._widgets["output.server.enabled"].winfo_rooty() < form._widgets["output.speech.speed"].winfo_rooty()
 
-        clipped = [
-            (spec.path, form._widgets[spec.path].winfo_reqwidth(), form._widgets[spec.path].winfo_width())
-            for spec in form.fields
-            if (advanced or not spec.advanced) and _clipped(form._widgets[spec.path])
-        ]
+        visible = [s for s in form.fields if s.path.startswith("output.server.") or advanced or not s.advanced]
+        clipped = [(s.path, form._widgets[s.path].winfo_reqwidth(), form._widgets[s.path].winfo_width())
+                   for s in visible if _clipped(form._widgets[s.path])]
         assert not clipped, clipped
-        # Labels/tips in each visible section must fit their cell
-        for frame in packed:
-            if not isinstance(frame, ttk.LabelFrame):
-                continue
-            for child in frame.grid_slaves():
+        for parent in (form.settings_box, form.advanced.body):
+            for child in parent.grid_slaves():
                 if isinstance(child, ttk.Label) and child.winfo_ismapped():
-                    assert not _clipped(child), (frame.cget("text"), child.cget("text"))
+                    assert not _clipped(child), child.cget("text")
     w.root.withdraw()

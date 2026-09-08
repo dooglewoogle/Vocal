@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
 
-from vocal.gui.settings_form import SettingsForm, speech_fields
+from vocal.gui.settings_form import SERVER_FIELDS, SettingsForm, make_field_widget, speech_fields
 
 if TYPE_CHECKING:
     from vocal.gui.window import VocalWindow
@@ -19,19 +19,31 @@ class SpeechTab(ttk.Frame):
         super().__init__(master)
         self.window = window
         self.app = window.app
-        self.form = SettingsForm(self, window, speech_fields(), above=self._build_grid)
+        self.form = SettingsForm(self, window, speech_fields(), header=self._build_header)
         self.form.pack(fill="both", expand=True)
         self.refresh()
 
     # ── Grid ─────────────────────────────────────────────────────────
 
-    def _build_grid(self, parent: ttk.Frame) -> tk.Widget:
+    def _build_header(self, parent: ttk.Frame, form: SettingsForm) -> None:
+        # Server row: [x] Enable speech   Host [____]  Port [____]
+        row = ttk.Frame(parent, padding=(4, 6))
+        row.pack(fill="x", padx=4)
+        for spec in SERVER_FIELDS:
+            widget, var = make_field_widget(row, spec)
+            if spec.kind != "bool":
+                ttk.Label(row, text=spec.label).pack(side="left", padx=(16, 4))
+                widget.configure(width=16 if spec.path.endswith("host") else 7)  # type: ignore[call-arg]
+            widget.pack(side="left")
+            form.add_field(spec, widget, var)
+
         box = ttk.LabelFrame(parent, text="Voices", padding=(10, 6))
-        cols = ("backend", "downloaded", "current", "description")
+        box.pack(fill="x", padx=4, pady=(4, 8))
+        cols = ("downloaded", "current", "description")
         self._voices = ttk.Treeview(box, columns=cols, show="tree headings", height=7, selectmode="browse")
         self._voices.heading("#0", text="Voice")
         self._voices.column("#0", width=210, stretch=False)
-        for c, w in zip(cols, (70, 90, 70, 300)):
+        for c, w in zip(cols, (90, 70, 370)):
             self._voices.heading(c, text=c.capitalize())
             self._voices.column(c, width=w, anchor="center" if c in ("downloaded", "current") else "w",
                                 stretch=(c == "description"))
@@ -46,7 +58,6 @@ class SpeechTab(ttk.Frame):
         ttk.Button(bar, text="Test", command=self._test).pack(side="left", padx=4)
         self._voice_status = ttk.Label(bar, text="", foreground="#666")
         self._voice_status.pack(side="left", padx=12)
-        return box
 
     def refresh(self) -> None:
         from vocal.output.models import VOICES, is_downloaded
@@ -56,7 +67,7 @@ class SpeechTab(ttk.Frame):
         current = self.app.config.output.speech.voice
         for name, spec in VOICES.items():
             self._voices.insert("", "end", iid=name, text=name, values=(
-                spec.backend, "✓" if is_downloaded(spec) else "", "✓" if name == current else "", spec.description,
+                "✓" if is_downloaded(spec) else "", "✓" if name == current else "", spec.description,
             ))
         if selected and self._voices.exists(selected):
             self._voices.selection_set(selected)

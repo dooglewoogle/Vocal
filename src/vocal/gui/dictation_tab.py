@@ -46,14 +46,15 @@ class DictationTab(ttk.Frame):
         super().__init__(master)
         self.window = window
         self.app = window.app
-        self.form = SettingsForm(self, window, dictation_fields(), above=self._build_grid)
+        self.form = SettingsForm(self, window, dictation_fields(), header=self._build_grid)
         self.form.pack(fill="both", expand=True)
         self.refresh()
 
     # ── Grid ─────────────────────────────────────────────────────────
 
-    def _build_grid(self, parent: ttk.Frame) -> tk.Widget:
+    def _build_grid(self, parent: ttk.Frame, _form: SettingsForm) -> None:
         box = ttk.LabelFrame(parent, text="Whisper models", padding=(10, 6))
+        box.pack(fill="x", padx=4, pady=(4, 8))
         self._models = ttk.Treeview(box, columns=("cached", "current"), show="tree headings",
                                     height=7, selectmode="browse")
         self._models.heading("#0", text="Model")
@@ -71,7 +72,6 @@ class DictationTab(ttk.Frame):
             text="Models download on first use (100 MB – 3 GB). Switching restarts dictation.",
         )
         self._grid_status.pack(side="left", padx=12)
-        return box
 
     def refresh(self) -> None:
         selected = self._selected()

@@ -153,7 +153,7 @@ def driver(window) -> None:
 
         # ── Settings: change speed + hotkey key, Save & Apply ──
         ui(window, lambda: window.notebook.select(window.dictation))
-        ui(window, lambda: window.dictation.form._show_advanced.set(True) or window.dictation.form._toggle_advanced())
+        ui(window, lambda: window.dictation.form.set_advanced(True))
         shot("2-dictation")
         ui(window, lambda: window.dictation.form._vars["input.hotkey.key"].set("F23"))
         ui(window, lambda: window.dictation.form.save_and_apply())
