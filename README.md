@@ -5,7 +5,7 @@ Local, CPU-only voice daemon with two sides:
 - **Input (dictation)** — speak and text appears in the active window. Built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) with streaming voice activity detection.
 - **Output (speech)** — send text and it is read aloud. Local TTS via [Piper](https://github.com/OHF-Voice/piper1-gpl) or [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), with a localhost HTTP hook so any process can make Vocal talk.
 
-No cloud, no GPU, no latency surprises. A system tray icon shows what it is doing.
+No cloud, no GPU, no latency surprises. A settings window is the main control surface; a system tray icon shows what it is doing. Everything is also reachable from the command line and a TOML file for headless use.
 
 ```
  mic ──► input ──► Whisper ──► text ──► active window
@@ -19,7 +19,7 @@ No cloud, no GPU, no latency surprises. A system tray icon shows what it is doin
 - **Python**: 3.10+
 - **CPU**: Any x86_64 — runs int8 quantised by default
 - **Audio**: Any ALSA/PulseAudio/PipeWire device
-- **Desktop**: System tray required (see [Tray support](#tray-support))
+- **Desktop**: Tk for the settings window (`python3-tk`), system tray optional (see [Tray support](#tray-support))
 
 ## Installation
 
@@ -27,7 +27,7 @@ No cloud, no GPU, no latency surprises. A system tray icon shows what it is doin
 
 ```bash
 # X11
-sudo apt install xdotool xclip portaudio19-dev \
+sudo apt install xdotool xclip portaudio19-dev python3-tk \
     python3-gi gir1.2-ayatanaappindicator3-0.1 libnotify-bin
 # Wayland: replace xdotool xclip with
 sudo apt install wtype wl-clipboard
@@ -56,10 +56,13 @@ pip install '.[tts-piper]'          # dictation + Piper speech (recommended)
 ## Quick start
 
 ```bash
-# Run the daemon: live dictation + speech server + tray icon
+# Run Vocal: settings window + live dictation + speech server + tray icon
 vocal
 
-# Hotkey dictation instead of always-on
+# Tray only, no window (servers, SSH, scripts)
+vocal --headless
+
+# Hotkey dictation instead of always-on (also settable in the window)
 vocal --hotkey
 
 # Make it talk (from any shell, while the daemon runs)
@@ -69,7 +72,24 @@ echo "Or pipe text in." | vocal say
 
 First run downloads the Whisper model (~500 MB for `small.en`) and, on the first `say`, the default Piper voice (~65 MB). Subsequent runs start in seconds.
 
-Tray icon: green when listening, grey when paused, amber when transcribing or speaking.
+Tray icon: green when listening, grey when paused, amber when loading, transcribing or speaking.
+
+---
+
+## The window
+
+`vocal` opens a window with four tabs. Closing it hides Vocal to the tray; **Open Vocal** in the tray menu brings it back.
+
+| Tab | What it does |
+|-----|--------------|
+| **Status** | Current state (Loading / Listening / Recording / Transcribing / Paused, plus Speaking), a log of recent transcriptions, Pause/Resume and Stop speaking |
+| **Settings** | Every option from the [configuration file](#configuration-file). **Save & Apply** writes `config.toml` and applies the change live: speech settings take effect immediately, dictation settings restart the dictation engine (a few seconds while the Whisper model reloads). Voice detection, post-processing and other set-once options are under **Show advanced**. |
+| **Voices & Models** | Download, remove, test and pick the default text-to-speech voice; see which Whisper models are cached and switch between them |
+| **Phrasebook** | Edit mishearing → correction rules; saving applies them without a model reload |
+
+Values passed on the command line are shown in the window and, if you save, written to the file. Saving rewrites `config.toml` without any comments you had added by hand.
+
+If Tk is not installed Vocal prints a hint and runs headless. If the tray is unavailable, the window runs alone and closing it quits.
 
 ---
 
@@ -83,7 +103,7 @@ Tray icon: green when listening, grey when paused, amber when transcribing or sp
 | **Hotkey** | `vocal --hotkey` | Press hotkey to record, press again to transcribe |
 | **Push-to-talk** | `vocal --mode ptt` | Hold hotkey to record, release to transcribe |
 
-Passing `--mode` or `--duck` implies `--hotkey`. Add `--live` explicitly to combine them with live mode, where the hotkey pauses/resumes listening (hold-to-mute in PTT mode).
+The mode persists as `input.engine` in the config file (or the Settings tab). Passing `--mode` or `--duck` implies `--hotkey`. Add `--live` explicitly to combine them with live mode, where the hotkey pauses/resumes listening (hold-to-mute in PTT mode).
 
 ### Volume ducking while recording
 
@@ -119,10 +139,12 @@ Teach Vocal your vocabulary in `~/.config/vocal/phrasebook.toml`:
 "pie torch" = "PyTorch"
 ```
 
-| Flag | What it does |
-|------|-------------|
-| `--phrasebook` | Seeds Whisper's decoder with your vocabulary |
-| `--phrasebook-replace` | Applies find/replace corrections after transcription |
+| Flag | Config key | What it does |
+|------|-----------|-------------|
+| `--phrasebook` | `input.phrasebook.seed` | Seeds Whisper's decoder with your vocabulary |
+| `--phrasebook-replace` | `input.phrasebook.replace` | Applies find/replace corrections after transcription |
+
+The Phrasebook tab in the window edits the same file and applies changes to the running engine immediately.
 
 ---
 
@@ -199,12 +221,19 @@ Requests carrying an `Origin` header get `403`: browsers add one to every cross-
 
 ## Command reference
 
+Flags override the configuration file for that run.
+
 ```
-vocal [flags]                       run the daemon (default when no command given)
+vocal [flags]                       run Vocal: window + daemon (default when no command given)
 vocal say [-i] [--voice V] [TEXT…]  speak TEXT, or stdin if omitted / '-'
 vocal stop
 vocal status
 vocal models [list | download NAME | remove NAME]
+
+General:
+  --headless                Tray icon only, no settings window
+  --config PATH             Config TOML (default: ~/.config/vocal/config.toml)
+  --log-level LEVEL
 
 Dictation:
   --live / --hotkey         Engine (default: live)
@@ -225,20 +254,23 @@ Speech:
 Utilities:
   --list-devices            Audio input + output devices
   --benchmark [--benchmark-mic] [--latency-target S]
-
-General:
-  --config PATH             Config TOML (default: ~/.config/vocal/config.toml)
-  --log-level LEVEL
 ```
 
 ## Configuration file
 
-`~/.config/vocal/config.toml` (macOS: `~/Library/Application Support/vocal/`). CLI flags override it.
+`~/.config/vocal/config.toml` (macOS: `~/Library/Application Support/vocal/`). CLI flags override it; the Settings tab writes it.
 
 ```toml
 log_level = "INFO"
 
 # ── Input: dictation ──────────────────────────────────────────
+[input]
+engine = "live"             # live | hotkey
+
+[input.phrasebook]
+seed = false                # bias Whisper toward phrasebook terms
+replace = false             # apply phrasebook corrections after transcription
+
 [input.model]
 size = "small.en"
 compute_type = "int8"
@@ -305,7 +337,7 @@ Config tables moved under `input` / `output`. Vocal refuses to start with the ol
 
 ## Tray support
 
-The tray icon shows the current state and offers: Pause/Resume, Audio Device, Model, Mode, **Voice** (pick a TTS voice; undownloaded ones are marked), **Stop speaking**, Edit Phrasebook, Quit.
+The tray icon shows the current state and offers **Open Vocal**, **Pause/Resume**, **Stop speaking** and **Quit**. Everything else lives in the window. Without a tray (or on macOS in window mode) closing the window quits Vocal; `--headless` still requires a tray.
 
 | Desktop | Status |
 |---------|--------|

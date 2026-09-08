@@ -244,6 +244,9 @@ class VocalApp:
         # can suppress the mic too (engine construction loads the VAD model).
         self._start_server()
         self._engine.start()
+        # Engines only emit on *change*; announce the initial (LOADING) state so
+        # tray and window don't claim "Listening" while the model is still loading.
+        self.on_state.emit(self._engine.current_state)
 
     def shutdown(self) -> None:
         """Tear everything down in dependency order. Idempotent."""

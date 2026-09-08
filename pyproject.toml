@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vocal"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local CPU-only dictation and text-to-speech daemon (faster-whisper + Piper/Kokoro)"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"

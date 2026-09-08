@@ -22,6 +22,9 @@ case "$(uname -s)" in
         if ! python3 -c "import gi" &>/dev/null; then
             MISSING+=("python3-gi")
         fi
+        if ! dpkg -s python3-tk >/dev/null 2>&1; then
+            MISSING+=("python3-tk")
+        fi
         if ! dpkg -l gir1.2-ayatanaappindicator3-0.1 &>/dev/null 2>&1; then
             MISSING+=("gir1.2-ayatanaappindicator3-0.1")
         fi
