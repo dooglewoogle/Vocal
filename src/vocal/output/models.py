@@ -64,6 +64,11 @@ def _piper(name: str, lang_dir: str, voice: str, quality: str, desc: str, lang_c
 
 
 _KOKORO_RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+# Pinned from the model-files-v1.0 release assets (sizes 325532387 / 28214398 bytes).
+_KOKORO_SHA256 = {
+    "kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
+    "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+}
 
 
 def _kokoro(style: str, desc: str) -> VoiceSpec:
@@ -75,6 +80,7 @@ def _kokoro(style: str, desc: str) -> VoiceSpec:
         source="http",
         files=("kokoro-v1.0.onnx", "voices-v1.0.bin"),
         urls=(f"{_KOKORO_RELEASE}/kokoro-v1.0.onnx", f"{_KOKORO_RELEASE}/voices-v1.0.bin"),
+        sha256=_KOKORO_SHA256,
         model_id="kokoro-v1", style=style,
     )
 
