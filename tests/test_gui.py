@@ -201,9 +201,10 @@ def test_forms_lay_out_without_clipping(window, advanced) -> None:
         w.root.update()
 
         packed = form._form.pack_slaves()
-        titles = [c.cget("text") for c in packed if isinstance(c, ttk.LabelFrame)]
-        # header grid, then Settings; the Advanced block is a Collapsible, not a LabelFrame
-        assert titles[-2:] == (["Whisper models", "Settings"] if tab is w.dictation else ["Voices", "Settings"]), titles
+        assert not [c for c in packed if isinstance(c, ttk.LabelFrame)], "no boxed sections: headings only"
+        titles = [c.cget("text") for c in packed if isinstance(c, ttk.Label)]
+        # header grid heading, then Settings heading; the Advanced block is a Collapsible
+        assert titles == (["Whisper models", "Settings"] if tab is w.dictation else ["Voices", "Settings"]), titles
         assert form.advanced.body.winfo_ismapped() == advanced
         if tab is w.speech:  # server row is the very first thing on the tab
             assert form._widgets["output.server.enabled"].winfo_ismapped()

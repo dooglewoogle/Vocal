@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
 
-from vocal.gui.settings_form import SERVER_FIELDS, SettingsForm, make_field_widget, speech_fields
+from vocal.gui.settings_form import SERVER_FIELDS, SettingsForm, make_field_widget, section, speech_fields
 from vocal.gui.tooltip import tip
 
 if TYPE_CHECKING:
@@ -38,8 +38,7 @@ class SpeechTab(ttk.Frame):
             tip(widget, spec.help).pack(side="left")
             form.add_field(spec, widget, var)
 
-        box = ttk.LabelFrame(parent, text="Voices", padding=(10, 6))
-        box.pack(fill="x", padx=4, pady=(4, 8))
+        box = section(parent, "Voices")
         cols = ("downloaded", "current", "description")
         self._voices = ttk.Treeview(box, columns=cols, show="tree headings", height=7, selectmode="browse")
         self._voices.heading("#0", text="Voice")

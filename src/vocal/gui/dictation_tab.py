@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
 
-from vocal.gui.settings_form import SettingsForm, dictation_fields
+from vocal.gui.settings_form import SettingsForm, dictation_fields, section
 from vocal.gui.tooltip import tip
 
 if TYPE_CHECKING:
@@ -54,8 +54,7 @@ class DictationTab(ttk.Frame):
     # ── Grid ─────────────────────────────────────────────────────────
 
     def _build_grid(self, parent: ttk.Frame, _form: SettingsForm) -> None:
-        box = ttk.LabelFrame(parent, text="Whisper models", padding=(10, 6))
-        box.pack(fill="x", padx=4, pady=(4, 8))
+        box = section(parent, "Whisper models")
         self._models = ttk.Treeview(box, columns=("cached", "current"), show="tree headings",
                                     height=7, selectmode="browse")
         self._models.heading("#0", text="Model")

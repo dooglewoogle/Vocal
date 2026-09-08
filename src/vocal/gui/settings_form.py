@@ -223,6 +223,15 @@ def make_field_widget(parent: tk.Misc, spec: FieldSpec) -> tuple[tk.Widget, tk.V
     return w, var
 
 
+def section(parent: tk.Misc, title: str) -> ttk.Frame:
+    """A bold heading followed by a plain frame: sections are flat, not boxed,
+    so the only borders on a tab are the pane's and the controls' own."""
+    ttk.Label(parent, text=title, font=("TkDefaultFont", 11, "bold")).pack(anchor="w", padx=4, pady=(8, 2))
+    body = ttk.Frame(parent, padding=(10, 2, 4, 6))
+    body.pack(fill="x", padx=4)
+    return body
+
+
 class Collapsible(ttk.Frame):
     """A header button that shows/hides a body frame."""
 
@@ -232,7 +241,7 @@ class Collapsible(ttk.Frame):
         self.open = tk.BooleanVar(value=False)
         self._button = ttk.Button(self, command=self.toggle, style="Toolbutton")
         tip(self._button, "Settings most people never change. Hover any field for an explanation.").pack(anchor="w")
-        self.body = ttk.Frame(self, padding=(18, 4, 0, 4))
+        self.body = ttk.Frame(self, padding=(10, 2, 4, 6))
         self.body.columnconfigure(1, weight=1)
         self._render()
 
@@ -292,11 +301,10 @@ class SettingsForm(ttk.Frame):
         if header is not None:
             header(self._form, self)
 
-        self.settings_box = ttk.LabelFrame(self._form, text="Settings", padding=(10, 6))
-        self.settings_box.pack(fill="x", padx=4, pady=4)
+        self.settings_box = section(self._form, "Settings")
         self.settings_box.columnconfigure(1, weight=1)
         self.advanced = Collapsible(self._form, "Advanced")
-        self.advanced.pack(fill="x", padx=4, pady=(2, 6))
+        self.advanced.pack(fill="x", padx=4, pady=(6, 6))
         for spec in specs:
             parent = self.advanced.body if spec.advanced else self.settings_box
             self._add_row(parent, spec)
