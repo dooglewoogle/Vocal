@@ -30,12 +30,14 @@ class DictationEngine(BaseDictationEngine):
         phrasebook_replace: bool = False,
         on_state_change: Callable[[DictationState], None] | None = None,
         on_shutdown_requested: Callable[[], None] | None = None,
+        on_transcript: Callable[[str], None] | None = None,
         on_before_record: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(
             config, phrasebook, phrasebook_seed, phrasebook_replace,
             on_state_change=on_state_change,
             on_shutdown_requested=on_shutdown_requested,
+            on_transcript=on_transcript,
         )
         #: Runs synchronously before each recording starts — the daemon uses
         #: it to cut off text-to-speech so the mic doesn't capture it and so

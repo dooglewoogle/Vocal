@@ -33,11 +33,13 @@ class LiveDictationEngine(BaseDictationEngine):
         phrasebook_replace: bool = False,
         on_state_change: Callable[[DictationState], None] | None = None,
         on_shutdown_requested: Callable[[], None] | None = None,
+        on_transcript: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(
             config, phrasebook, phrasebook_seed, phrasebook_replace,
             on_state_change=on_state_change,
             on_shutdown_requested=on_shutdown_requested,
+            on_transcript=on_transcript,
         )
 
         # VAD
@@ -54,6 +56,9 @@ class LiveDictationEngine(BaseDictationEngine):
         self._preroll: deque[np.ndarray] = deque(maxlen=max(pad_chunks, 1))
         self._utterance_chunks: list[np.ndarray] = []
         self._in_speech = False
+        # Guards _in_speech / _utterance_chunks / VAD state: the VAD worker
+        # mutates them, and pause / suppress_input flush them from other threads.
+        self._utterance_lock = threading.RLock()
         self._max_speech_chunks = int(config.input.live.max_speech_duration_s * sample_rate / WINDOW_SAMPLES)
         self._raw_queue: queue.Queue[np.ndarray | None] = queue.Queue()
 
@@ -85,17 +90,19 @@ class LiveDictationEngine(BaseDictationEngine):
         """Called by hotkey listener to pause live listening."""
         self._paused.set()
         # Flush any in-progress utterance so partial audio isn't left dangling
-        if self._in_speech:
-            self._flush_utterance()
+        with self._utterance_lock:
+            if self._in_speech:
+                self._flush_utterance()
         self._idle_state = DictationState.SLEEPING
         self._set_state(DictationState.SLEEPING)
         print("\u23f8  Paused", flush=True)
 
     def _on_unpause(self) -> None:
         """Called by hotkey listener to resume live listening."""
-        self._vad.reset()
-        self._detector.reset()
-        self._preroll.clear()
+        with self._utterance_lock:
+            self._vad.reset()
+            self._detector.reset()
+            self._preroll.clear()
         self._paused.clear()
         self._idle_state = DictationState.LISTENING
         self._set_state(DictationState.LISTENING)
@@ -109,16 +116,18 @@ class LiveDictationEngine(BaseDictationEngine):
         self._suppressed.set()
         # Don't let an utterance that was mid-flight absorb the tail of the
         # speaker audio; finish it now with what we have.
-        if self._in_speech:
-            self._flush_utterance()
+        with self._utterance_lock:
+            if self._in_speech:
+                self._flush_utterance()
         logger.debug("Input suppressed (speech output active)")
 
     def release_input(self) -> None:
         if not self._suppressed.is_set():
             return
-        self._vad.reset()
-        self._detector.reset()
-        self._preroll.clear()
+        with self._utterance_lock:
+            self._vad.reset()
+            self._detector.reset()
+            self._preroll.clear()
         self._suppressed.clear()
         logger.debug("Input released")
 
@@ -156,56 +165,58 @@ class LiveDictationEngine(BaseDictationEngine):
             if chunk is None:
                 break
 
-            if self._in_speech:
-                self._utterance_chunks.append(chunk)
-                if len(self._utterance_chunks) >= self._max_speech_chunks:
-                    self._flush_utterance()
-                    window_buf = np.array([], dtype=np.float32)
-                    continue
-            else:
-                self._preroll.append(chunk)
+            with self._utterance_lock:
+                if self._in_speech:
+                    self._utterance_chunks.append(chunk)
+                    if len(self._utterance_chunks) >= self._max_speech_chunks:
+                        self._flush_utterance()
+                        window_buf = np.array([], dtype=np.float32)
+                        continue
+                else:
+                    self._preroll.append(chunk)
 
-            window_buf = np.concatenate([window_buf, chunk])
+                window_buf = np.concatenate([window_buf, chunk])
 
-            while len(window_buf) >= WINDOW_SAMPLES:
-                window = window_buf[:WINDOW_SAMPLES]
-                window_buf = window_buf[WINDOW_SAMPLES:]
+                while len(window_buf) >= WINDOW_SAMPLES:
+                    window = window_buf[:WINDOW_SAMPLES]
+                    window_buf = window_buf[WINDOW_SAMPLES:]
 
-                prob = self._vad.process_window(window)
-                event, _ = self._detector.process(prob)
+                    prob = self._vad.process_window(window)
+                    event, _ = self._detector.process(prob)
 
-                if event == "speech_start":
-                    self._in_speech = True
-                    self._utterance_chunks = list(self._preroll)
-                    self._preroll.clear()
-                    self._set_state(DictationState.RECORDING)
-                    print("\U0001f399  Speech detected...", flush=True)
+                    if event == "speech_start":
+                        self._in_speech = True
+                        self._utterance_chunks = list(self._preroll)
+                        self._preroll.clear()
+                        self._set_state(DictationState.RECORDING)
+                        print("\U0001f399  Speech detected...", flush=True)
 
-                elif event == "speech_end" and self._in_speech:
-                    self._flush_utterance()
+                    elif event == "speech_end" and self._in_speech:
+                        self._flush_utterance()
 
     def _flush_utterance(self) -> None:
         """Extract buffered speech audio and send to transcription."""
-        if not self._utterance_chunks:
+        with self._utterance_lock:
+            if not self._utterance_chunks:
+                self._in_speech = False
+                self._set_state(self._idle_state)
+                return
+
+            audio = np.concatenate(self._utterance_chunks)
+            duration = audio.size / self._config.input.audio.sample_rate
+
+            if duration >= 0.5:
+                print(f"\u23f3 Transcribing {duration:.1f}s...", flush=True)
+                self._set_state(DictationState.TRANSCRIBING)
+                self._transcription_queue.put(audio)
+            else:
+                logger.debug("Speech too short (%.2fs), skipping", duration)
+                self._set_state(self._idle_state)
+
+            self._utterance_chunks.clear()
             self._in_speech = False
-            self._set_state(self._idle_state)
-            return
-
-        audio = np.concatenate(self._utterance_chunks)
-        duration = audio.size / self._config.input.audio.sample_rate
-
-        if duration >= 0.5:
-            print(f"\u23f3 Transcribing {duration:.1f}s...", flush=True)
-            self._set_state(DictationState.TRANSCRIBING)
-            self._transcription_queue.put(audio)
-        else:
-            logger.debug("Speech too short (%.2fs), skipping", duration)
-            self._set_state(self._idle_state)
-
-        self._utterance_chunks.clear()
-        self._in_speech = False
-        self._vad.reset()
-        self._detector.reset()
+            self._vad.reset()
+            self._detector.reset()
 
     # ── Audio stream management ─────────────────────────────────────
 

@@ -80,3 +80,65 @@ def test_hotkey_engine_defaults_are_noops() -> None:
     d = Dummy(VocalConfig())
     d.suppress_input()
     d.release_input()
+
+
+# ── transcript hook + phrasebook hot-swap ──
+
+
+def test_on_transcript_fires_after_inject(monkeypatch: pytest.MonkeyPatch) -> None:
+    from vocal.input.base_engine import BaseDictationEngine
+
+    class Dummy(BaseDictationEngine):
+        def run(self) -> None:  # pragma: no cover
+            pass
+
+    injected: list[str] = []
+    got: list[str] = []
+    monkeypatch.setattr("vocal.input.base_engine.inject_text", lambda text, cfg: injected.append(text))
+    d = Dummy(VocalConfig(), on_transcript=got.append)
+    d._output_queue.put("hello")
+    d._output_queue.put(None)
+    d._output_worker()
+    assert injected == ["hello"] and got == ["hello"]
+
+
+def test_on_transcript_skipped_when_inject_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from vocal.input.base_engine import BaseDictationEngine
+
+    class Dummy(BaseDictationEngine):
+        def run(self) -> None:  # pragma: no cover
+            pass
+
+    def boom(text, cfg):
+        raise RuntimeError("no display")
+
+    got: list[str] = []
+    monkeypatch.setattr("vocal.input.base_engine.inject_text", boom)
+    d = Dummy(VocalConfig(), on_transcript=got.append)
+    d._output_queue.put("hello")
+    d._output_queue.put(None)
+    d._output_worker()
+    assert got == []
+
+
+def test_set_phrasebook_updates_seed_and_replace() -> None:
+    from vocal.input.base_engine import BaseDictationEngine
+    from vocal.input.phrasebook import Phrasebook, _compile_replacements
+
+    class Dummy(BaseDictationEngine):
+        def run(self) -> None:  # pragma: no cover
+            pass
+
+    d = Dummy(VocalConfig())
+    assert d._phrasebook is None and d._transcriber._initial_prompt is None
+
+    rules = {"pie torch": "PyTorch"}
+    pb = Phrasebook(replacements=rules, _patterns=_compile_replacements(rules))
+    d.set_phrasebook(pb, seed=True, replace=True)
+    assert d._phrasebook is pb
+    assert d._seed_phrasebook is pb
+    assert d._transcriber._initial_prompt == "PyTorch"
+
+    d.set_phrasebook(pb, seed=False, replace=True)
+    assert d._phrasebook is pb and d._seed_phrasebook is None
+    assert d._transcriber._initial_prompt is None

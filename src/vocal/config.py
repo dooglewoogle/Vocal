@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 
 if sys.version_info >= (3, 11):
@@ -104,7 +104,19 @@ class PostprocessConfig:
 
 
 @dataclass
+class PhrasebookConfig:
+    """Whether the phrasebook (~/.config/vocal/phrasebook.toml) is used."""
+
+    seed: bool = False  # bias Whisper decoding toward phrasebook terms
+    replace: bool = False  # apply find/replace corrections after transcription
+
+
+ENGINES = ("live", "hotkey")
+
+
+@dataclass
 class InputConfig:
+    engine: str = "live"  # live | hotkey
     model: ModelConfig = field(default_factory=ModelConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     hotkey: HotkeyConfig = field(default_factory=HotkeyConfig)
@@ -112,6 +124,7 @@ class InputConfig:
     vad: VADConfig = field(default_factory=VADConfig)
     live: LiveConfig = field(default_factory=LiveConfig)
     postprocess: PostprocessConfig = field(default_factory=PostprocessConfig)
+    phrasebook: PhrasebookConfig = field(default_factory=PhrasebookConfig)
 
 
 # ── Output (text-to-speech) ─────────────────────────────────────────
@@ -236,4 +249,56 @@ def load_config(path: Path | None = None) -> VocalConfig:
             _check_legacy_layout(data, path)
             _apply_dict(config, data)
 
+    if config.input.engine not in ENGINES:
+        raise ConfigError(
+            f"Config key 'input.engine': expected one of {', '.join(ENGINES)}, "
+            f"got {config.input.engine!r}"
+        )
     return config
+
+
+# ── Saving / copying ────────────────────────────────────────────────
+
+
+def to_dict(obj: object) -> dict:
+    """Dataclass → plain dict, recursively, dropping ``None`` leaves.
+
+    TOML has no null, so unset optional fields (``device``, ``model_path``)
+    are simply omitted; ``load_config`` leaves them at their ``None`` default.
+    """
+    out: dict = {}
+    for f in fields(obj):  # type: ignore[arg-type]
+        value = getattr(obj, f.name)
+        if is_dataclass(value):
+            out[f.name] = to_dict(value)
+        elif value is not None:
+            out[f.name] = value
+    return out
+
+
+def save_config(config: VocalConfig, path: Path | None = None) -> Path:
+    """Write ``config`` as TOML (atomically). Comments in an existing file are not preserved."""
+    import tomli_w
+
+    path = path or CONFIG_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = tomli_w.dumps(to_dict(config))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(body)
+    os.replace(tmp, path)
+    return path
+
+
+def copy_into(dst: object, src: object) -> None:
+    """Copy every field of ``src`` into ``dst`` in place, recursing into nested dataclasses.
+
+    Used to update config objects that other components hold references to
+    (engines, the speech controller) without swapping the objects themselves.
+    """
+    for f in fields(dst):  # type: ignore[arg-type]
+        value = getattr(src, f.name)
+        current = getattr(dst, f.name)
+        if is_dataclass(current) and is_dataclass(value):
+            copy_into(current, value)
+        else:
+            setattr(dst, f.name, value)

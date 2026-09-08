@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import queue
 import re
@@ -9,7 +10,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from vocal.config import SpeechConfig
+from vocal.config import SpeechConfig, copy_into
 from vocal.notify import notify
 from vocal.output.backends import BackendUnavailable, TTSBackend, resolve_backend
 from vocal.output.models import VoiceNotFoundError, get_voice, resolve_model_path
@@ -127,11 +128,29 @@ class SpeechController:
     def set_voice(self, name: str) -> None:
         """Switch voice (downloading if needed) on the worker thread."""
         get_voice(name)  # validate now so callers get an immediate error
+        new = copy.copy(self._config)
+        new.voice = name
+        self.apply_config(new)
+
+    def apply_config(self, new: SpeechConfig) -> None:
+        """Adopt ``new`` in place on this controller (other components hold a
+        reference to it and to our config object).
+
+        Voice / backend / model_path changes invalidate the loaded voice so the
+        next utterance reloads; a device change re-targets the player. speed and
+        volume are read per utterance and need nothing.
+        """
         with self._voice_lock:
-            self._config.voice = name
-        # Any queued utterance without an explicit voice picks up the new one;
-        # force a reload on next synthesis.
-        self._backend_voice = None
+            old = self._config
+            reload = (old.voice, old.backend, old.model_path) != (new.voice, new.backend, new.model_path)
+            device_changed = old.device != new.device
+            copy_into(old, new)
+        if reload:
+            # Any queued utterance without an explicit voice picks up the new one;
+            # force a reload on next synthesis.
+            self._backend_voice = None
+        if device_changed:
+            self._player.set_device(new.device)
 
     def shutdown(self) -> None:
         self._shutdown = True

@@ -45,6 +45,20 @@ class AudioBuffer:
             return sum(c.shape[0] for c in self._chunks) / self._sample_rate
 
 
+def list_input_devices() -> list[tuple[int, str, bool]]:
+    """``(index, name, is_default)`` for every device with input channels."""
+    try:
+        default = sd.default.device[0]
+        return [
+            (i, dev["name"], i == default)
+            for i, dev in enumerate(sd.query_devices())
+            if dev["max_input_channels"] > 0
+        ]
+    except Exception:
+        logger.exception("Failed to query audio devices")
+        return []
+
+
 def resolve_device(device: str | None) -> int | None:
     """Resolve a device name or index string to a sounddevice device index."""
     if not device:

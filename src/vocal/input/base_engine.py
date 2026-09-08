@@ -38,12 +38,14 @@ class BaseDictationEngine(ABC):
         phrasebook_replace: bool = False,
         on_state_change: Callable[[DictationState], None] | None = None,
         on_shutdown_requested: Callable[[], None] | None = None,
+        on_transcript: Callable[[str], None] | None = None,
     ) -> None:
         self._config = config
         self._shutdown = threading.Event()
         self._phrasebook = phrasebook if phrasebook_replace else None
         self._state_callback = on_state_change
         self._shutdown_callback = on_shutdown_requested
+        self._transcript_callback = on_transcript
         self._engine_thread: threading.Thread | None = None
 
         self._seed_phrasebook = phrasebook if phrasebook_seed else None
@@ -74,6 +76,18 @@ class BaseDictationEngine(ABC):
 
     def release_input(self) -> None:
         """Undo :meth:`suppress_input`. Default: no-op."""
+
+    # ── Phrasebook ──────────────────────────────────────────────────
+
+    def set_phrasebook(self, phrasebook: Phrasebook | None, seed: bool, replace: bool) -> None:
+        """Hot-swap the phrasebook. Takes effect on the next utterance; no model reload.
+
+        Updates the seed copy too, so a later :meth:`switch_model` rebuilds the
+        transcriber with the current hint rather than the one from startup.
+        """
+        self._phrasebook = phrasebook if replace else None
+        self._seed_phrasebook = phrasebook if seed else None
+        self._transcriber.set_phrasebook(self._seed_phrasebook)
 
     # ── State management ────────────────────────────────────────────
 
@@ -192,6 +206,12 @@ class BaseDictationEngine(ABC):
                 print(f"\u2705 {text}", flush=True)
             except Exception:
                 logger.exception("Failed to inject text")
+                continue
+            if self._transcript_callback is not None:
+                try:
+                    self._transcript_callback(text)
+                except Exception:
+                    logger.exception("on_transcript callback raised")
 
     # ── Thread management ───────────────────────────────────────────
 

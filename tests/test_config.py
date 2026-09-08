@@ -104,3 +104,63 @@ def test_legacy_error_lists_all_offending_tables(tmp_path: Path) -> None:
 def test_new_output_table_not_mistaken_for_legacy(tmp_path: Path) -> None:
     cfg = load_config(_write(tmp_path, "[output.speech]\nbackend = 'system'\n"))
     assert cfg.output.speech.backend == "system"
+
+
+# ── engine key ──
+
+
+def test_engine_key_loads_and_validates(tmp_path: Path) -> None:
+    cfg = load_config(_write(tmp_path, "[input]\nengine = 'hotkey'\n"))
+    assert cfg.input.engine == "hotkey"
+    with pytest.raises(ConfigError, match="input.engine"):
+        load_config(_write(tmp_path, "[input]\nengine = 'telepathy'\n"))
+
+
+def test_phrasebook_table(tmp_path: Path) -> None:
+    cfg = load_config(_write(tmp_path, "[input.phrasebook]\nseed = true\nreplace = true\n"))
+    assert cfg.input.phrasebook.seed is True and cfg.input.phrasebook.replace is True
+
+
+# ── save / copy ──
+
+
+def test_save_config_round_trips(tmp_path: Path) -> None:
+    from vocal.config import save_config
+
+    cfg = VocalConfig()
+    cfg.input.engine = "hotkey"
+    cfg.input.model.size = "tiny.en"
+    cfg.input.hotkey.duck = True
+    cfg.input.audio.device = "USB Mic"
+    cfg.output.speech.speed = 1.3
+    cfg.output.speech.voice = "kokoro-af_sarah"
+    cfg.output.server.port = 5005
+    cfg.log_level = "DEBUG"
+
+    path = save_config(cfg, tmp_path / "sub" / "config.toml")
+    assert path.exists() and not path.with_suffix(".toml.tmp").exists()
+    assert load_config(path) == cfg
+
+
+def test_save_config_omits_none_fields(tmp_path: Path) -> None:
+    from vocal.config import save_config
+
+    body = save_config(VocalConfig(), tmp_path / "c.toml").read_text()
+    assert "device" not in body and "model_path" not in body
+    assert "[input.model]" in body and "[output.speech]" in body
+
+
+def test_copy_into_updates_nested_in_place() -> None:
+    from vocal.config import copy_into
+
+    live = VocalConfig()
+    speech_ref = live.output.speech  # something else holds this reference
+    new = VocalConfig()
+    new.output.speech.speed = 2.0
+    new.input.model.size = "medium.en"
+    new.input.audio.device = "7"
+
+    copy_into(live, new)
+    assert live == new
+    assert live.output.speech is speech_ref and speech_ref.speed == 2.0
+    assert live.input.audio.device == "7"

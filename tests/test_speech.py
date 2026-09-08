@@ -186,3 +186,26 @@ def test_set_voice_validates_and_updates() -> None:
     ctl.set_voice("piper-en-amy-low")
     assert ctl.voice == "piper-en-amy-low"
     ctl.shutdown()
+
+
+def test_apply_config_invalidates_loaded_voice_only_when_needed() -> None:
+    from dataclasses import replace
+
+    ctl, _, player, _ = _controller()
+    cfg_ref = ctl._config
+    assert ctl._backend_voice == ctl.voice
+
+    # speed/volume only: no reload, same config object mutated
+    ctl.apply_config(replace(cfg_ref, speed=1.5, volume=40))
+    assert ctl._backend_voice == ctl.voice
+    assert ctl._config is cfg_ref and cfg_ref.speed == 1.5 and cfg_ref.volume == 40
+
+    # voice change: loaded voice invalidated
+    ctl.apply_config(replace(cfg_ref, voice="piper-en-amy-low"))
+    assert ctl._backend_voice is None and ctl.voice == "piper-en-amy-low"
+
+    # device change: player re-targeted
+    player.set_device = lambda d: setattr(player, "device", d)  # type: ignore[attr-defined]
+    ctl.apply_config(replace(cfg_ref, device="USB Audio"))
+    assert player.device == "USB Audio"  # type: ignore[attr-defined]
+    ctl.shutdown()

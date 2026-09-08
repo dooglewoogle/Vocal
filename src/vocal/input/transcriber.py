@@ -39,6 +39,10 @@ class Transcriber:
         self._model = None
         self._initial_prompt = phrasebook.build_initial_prompt() if phrasebook else None
 
+    def set_phrasebook(self, phrasebook: Phrasebook | None) -> None:
+        """Replace the decoding hint. Takes effect on the next transcribe(); no reload."""
+        self._initial_prompt = phrasebook.build_initial_prompt() if phrasebook else None
+
     def load(self) -> None:
         """Load the Whisper model. Call once at startup."""
         from faster_whisper import WhisperModel

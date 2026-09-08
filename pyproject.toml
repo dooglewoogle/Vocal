@@ -17,6 +17,7 @@ dependencies = [
     "Pillow>=10.0",
     "evdev>=1.7.0; sys_platform == 'linux'",
     "tomli>=2.0.0; python_version < '3.11'",
+    "tomli-w>=1.0",
 ]
 
 [project.optional-dependencies]

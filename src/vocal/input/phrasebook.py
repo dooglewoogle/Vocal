@@ -7,6 +7,7 @@ Layer 2: Replacements fix mishearings that still slip through.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -61,6 +62,23 @@ def _compile_replacements(replacements: dict[str, str]) -> list[tuple[re.Pattern
         pattern = re.compile(r"\b" + re.escape(wrong) + r"\b", re.IGNORECASE)
         patterns.append((pattern, right))
     return patterns
+
+
+def save_phrasebook(replacements: dict[str, str], path: Path | None = None) -> Path:
+    """Write ``replacements`` as the ``[replacements]`` table (atomically)."""
+    import tomli_w
+
+    path = path or PHRASEBOOK_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = (
+        "# Vocal Phrasebook — custom vocabulary and corrections\n"
+        "# \"mishearing\" = \"correct term\"\n\n"
+        + tomli_w.dumps({"replacements": dict(replacements)})
+    )
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(body)
+    os.replace(tmp, path)
+    return path
 
 
 def load_phrasebook(path: Path | None = None) -> Phrasebook:
