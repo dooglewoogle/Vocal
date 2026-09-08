@@ -143,7 +143,7 @@ class PhrasebookTab(ttk.Frame):
         self.window.run_bg(
             lambda: self.app.apply_config(cfg),
             on_done=lambda _n: (self._status.configure(text="Phrasebook settings applied"),
-                                self.window.settings.reload_from_app()),
+                                self.window.after_apply()),
             on_error=lambda e: self._status.configure(text=f"Failed: {e}"),
             name="phrasebook-flags",
         )

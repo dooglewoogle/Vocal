@@ -50,19 +50,19 @@ class VocalWindow:
         self._closed = False
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        from vocal.gui.dictation_tab import DictationTab
         from vocal.gui.phrasebook_tab import PhrasebookTab
-        from vocal.gui.settings_tab import SettingsTab
+        from vocal.gui.speech_tab import SpeechTab
         from vocal.gui.status_tab import StatusTab
-        from vocal.gui.voices_tab import VoicesTab
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=6, pady=6)
         self.status = StatusTab(self.notebook, self)
-        self.settings = SettingsTab(self.notebook, self)
-        self.voices = VoicesTab(self.notebook, self)
+        self.dictation = DictationTab(self.notebook, self)
+        self.speech = SpeechTab(self.notebook, self)
         self.phrasebook = PhrasebookTab(self.notebook, self)
-        for tab, label in ((self.status, "Status"), (self.settings, "Settings"),
-                           (self.voices, "Voices & Models"), (self.phrasebook, "Phrasebook")):
+        for tab, label in ((self.status, "Status"), (self.dictation, "Dictation"),
+                           (self.speech, "Speech"), (self.phrasebook, "Phrasebook")):
             self.notebook.add(tab, text=label)
 
         # App events → UI thread
@@ -162,13 +162,21 @@ class VocalWindow:
 
     # ── Shared helpers for tabs ──────────────────────────────────────
 
+    def after_apply(self) -> None:
+        """Re-sync every view with the live config after any apply_config."""
+        self.status.refresh_summary()
+        self.dictation.form.reload_from_app()
+        self.speech.form.reload_from_app()
+        self.dictation.refresh()
+        self.speech.refresh()
+        self.phrasebook.refresh_flags()
+
     def _on_rebuild(self, started: bool) -> None:
         self.status.set_rebuilding(started)
-        self.settings.set_busy(started)
+        self.dictation.form.set_busy(started)
+        self.speech.form.set_busy(started)
         if not started:
-            self.status.refresh_summary()
-            self.settings.reload_from_app()
-            self.voices.refresh()
+            self.after_apply()
 
 
 def run_gui(app: "VocalApp", on_ready: Callable[[VocalWindow], None] | None = None) -> None:

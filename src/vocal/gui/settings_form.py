@@ -1,7 +1,9 @@
-"""Settings tab: a data-driven form over VocalConfig.
+"""Reusable, data-driven settings form over VocalConfig.
 
-Every leaf of the config has exactly one :class:`FieldSpec` (guarded by a
-test). The form edits a deep copy; "Save & Apply" hands that copy to
+Each tab embeds one :class:`SettingsForm` with the subset of :class:`FieldSpec`
+it owns. Every config leaf is either a field on exactly one form or listed in
+:data:`OWNED_ELSEWHERE` (chosen through a grid or another tab); a test guards
+this. The form edits a deep copy; "Save & Apply" hands that copy to
 ``VocalApp.apply_config`` on a worker thread.
 """
 
@@ -9,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import tkinter as tk
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from tkinter import ttk
 from typing import TYPE_CHECKING, Any
@@ -20,6 +23,14 @@ if TYPE_CHECKING:
 
 DEFAULT_DEVICE = "(system default)"
 
+#: Config leaves deliberately absent from every form.
+OWNED_ELSEWHERE: frozenset[str] = frozenset({
+    "input.model.size",  # Whisper grid on the Dictation tab
+    "output.speech.voice",  # voice grid on the Speech tab
+    "input.phrasebook.seed",  # Phrasebook tab
+    "input.phrasebook.replace",  # Phrasebook tab
+})
+
 
 @dataclass(frozen=True)
 class FieldSpec:
@@ -29,62 +40,39 @@ class FieldSpec:
     section: str
     advanced: bool = False
     choices: tuple[str, ...] | None = None
+    labels: Mapping[str, str] | None = None  # choice value → display text
     help: str | None = None
 
 
-def _whisper_models() -> tuple[str, ...]:
-    from vocal.input.transcriber import VALID_MODELS
-
-    def key(m: str) -> tuple[int, str]:
-        order = ["tiny", "base", "small", "medium", "large", "distil"]
-        for i, o in enumerate(order):
-            if m.startswith(o):
-                return (i, m)
-        return (len(order), m)
-
-    return tuple(sorted(VALID_MODELS, key=key))
-
-
-def _voices() -> tuple[str, ...]:
-    from vocal.output.models import VOICES
-
-    return tuple(VOICES)
-
-
-def build_fields() -> list[FieldSpec]:
+def dictation_fields() -> list[FieldSpec]:
+    """Input side, in display order. The Whisper model grid sits above these."""
     F = FieldSpec
     return [
+        # ── Whisper model (next to the grid) ──
+        F("input.model.compute_type", "Compute type", "choice", "Whisper model", choices=("int8", "float32")),
+        F("input.model.beam_size", "Beam size (1 = fastest, 5 = thorough)", "int", "Whisper model"),
+        F("input.model.cpu_threads", "CPU threads (0 = auto)", "int", "Whisper model", advanced=True),
+        F("input.model.language", "Language code", "str", "Whisper model", advanced=True),
         # ── Dictation ──
         F("input.engine", "Dictation mode", "choice", "Dictation", choices=ENGINES,
-          help="live: always listening with voice detection · hotkey: press a key to record"),
-        F("input.model.size", "Whisper model", "choice", "Dictation", choices=_whisper_models(),
-          help="Bigger is more accurate and slower. .en models are English-only."),
+          labels={"live": "live (always listening)", "hotkey": "hotkey (hold to record)"}),
         F("input.audio.device", "Microphone", "device_in", "Dictation"),
-        F("input.live.min_silence_duration_ms", "End of sentence after silence (ms)", "int", "Dictation",
-          help="Live mode: how long a pause ends an utterance"),
-        F("input.phrasebook.seed", "Phrasebook: bias recognition toward my terms", "bool", "Dictation"),
-        F("input.phrasebook.replace", "Phrasebook: apply corrections after transcription", "bool", "Dictation"),
-        F("input.model.compute_type", "Compute type", "choice", "Dictation", advanced=True,
-          choices=("int8", "float32")),
-        F("input.model.beam_size", "Beam size", "int", "Dictation", advanced=True,
-          help="1 = greedy/fastest, 5 = thorough"),
-        F("input.model.cpu_threads", "CPU threads (0 = auto)", "int", "Dictation", advanced=True),
-        F("input.model.language", "Language code", "str", "Dictation", advanced=True),
+        F("input.live.min_silence_duration_ms", "End of sentence after silence (ms)", "int", "Dictation"),
         F("input.audio.sample_rate", "Sample rate", "int", "Dictation", advanced=True),
         F("input.audio.block_size", "Audio block size", "int", "Dictation", advanced=True),
         F("input.live.min_speech_duration_ms", "Minimum speech length (ms)", "int", "Dictation", advanced=True),
         F("input.live.max_speech_duration_s", "Maximum utterance length (s)", "float", "Dictation", advanced=True),
         # ── Hotkey ──
-        F("input.hotkey.key", "Hotkey", "str", "Hotkey", help="e.g. PAUSE, F18, SCROLLLOCK, END"),
-        F("input.hotkey.mode", "Hotkey behaviour", "choice", "Hotkey", choices=("toggle", "ptt"),
-          help="toggle: press to start/stop · ptt: hold to talk"),
-        F("input.hotkey.duck", "Lower system volume while recording", "bool", "Hotkey"),
-        F("input.hotkey.duck_amount", "Recording duck amount (%)", "int", "Hotkey"),
+        F("input.hotkey.key", "Hotkey (hold to record; hold to mute in live mode)", "str", "Hotkey",
+          help="e.g. PAUSE, F18, SCROLLLOCK, END"),
         F("input.hotkey.backend", "Hotkey backend", "choice", "Hotkey", advanced=True,
           choices=("auto", "evdev", "pynput")),
+        # ── Ducking ──
+        F("input.hotkey.duck", "Lower system volume while recording", "bool", "Ducking"),
+        F("input.hotkey.duck_amount", "Amount (%)", "int", "Ducking"),
         # ── Text output ──
         F("input.inject.method", "Insert text via", "choice", "Text output", choices=("clipboard", "xdotool"),
-          help="clipboard: paste with Ctrl+V · xdotool: simulate typing"),
+          labels={"clipboard": "clipboard (paste with Ctrl+V)", "xdotool": "xdotool (simulated typing)"}),
         F("input.inject.xdotool_delay", "Typing delay per key (ms)", "int", "Text output", advanced=True),
         F("input.postprocess.capitalize_first", "Capitalise first letter", "bool", "Text output", advanced=True),
         F("input.postprocess.strip_leading_space", "Strip leading space", "bool", "Text output", advanced=True),
@@ -95,28 +83,39 @@ def build_fields() -> list[FieldSpec]:
         F("input.vad.threshold", "Speech probability threshold", "float", "Voice detection", advanced=True),
         F("input.vad.min_silence_duration_ms", "VAD min silence (ms)", "int", "Voice detection", advanced=True),
         F("input.vad.speech_pad_ms", "Speech padding (ms)", "int", "Voice detection", advanced=True),
+    ]
+
+
+def speech_fields() -> list[FieldSpec]:
+    """Output side, in display order. The voice grid sits above these."""
+    F = FieldSpec
+    return [
+        # ── Voice model (next to the grid) ──
+        F("output.speech.backend", "Backend (used with a manual model path)", "choice", "Voice model",
+          advanced=True, choices=("piper", "kokoro", "system")),
+        F("output.speech.model_path", "Manual model path (bypasses downloads)", "str", "Voice model", advanced=True),
+        F("output.speech.auto_download", "Download voices automatically", "bool", "Voice model", advanced=True),
         # ── Speech ──
-        F("output.speech.voice", "Voice", "choice", "Speech", choices=_voices()),
         F("output.speech.speed", "Speed", "float", "Speech"),
         F("output.speech.volume", "Volume (0–100)", "int", "Speech"),
         F("output.speech.device", "Speaker", "device_out", "Speech"),
-        F("output.speech.duck", "Lower other apps while speaking", "bool", "Speech"),
-        F("output.speech.duck_amount", "Speaking duck amount (%)", "int", "Speech"),
         F("output.speech.pause_input", "Pause dictation while speaking", "bool", "Speech", advanced=True),
         F("output.speech.pause_input_tail_ms", "Keep paused after speech ends (ms)", "int", "Speech", advanced=True),
-        F("output.speech.backend", "Backend (with manual model path)", "choice", "Speech", advanced=True,
-          choices=("piper", "kokoro", "system")),
-        F("output.speech.model_path", "Manual model path", "str", "Speech", advanced=True,
-          help="Bypasses the voice registry and downloads"),
-        F("output.speech.auto_download", "Download voices automatically", "bool", "Speech", advanced=True),
+        # ── Ducking ──
+        F("output.speech.duck", "Lower other apps while speaking", "bool", "Ducking"),
+        F("output.speech.duck_amount", "Amount (%)", "int", "Ducking"),
         # ── Server ──
-        F("output.server.enabled", "Enable localhost speech server", "bool", "Server"),
+        F("output.server.enabled", "Enable localhost speech server", "bool", "Server", advanced=True),
         F("output.server.host", "Host", "str", "Server", advanced=True),
         F("output.server.port", "Port", "int", "Server", advanced=True),
         # ── General ──
         F("log_level", "Log level", "choice", "General", advanced=True,
           choices=("DEBUG", "INFO", "WARNING", "ERROR")),
     ]
+
+
+def all_fields() -> list[FieldSpec]:
+    return dictation_fields() + speech_fields()
 
 
 def config_leaves(obj: object = None, prefix: str = "") -> list[str]:
@@ -145,29 +144,38 @@ def set_path(cfg: object, path: str, value: Any) -> None:
     setattr(cfg, parts[-1], value)
 
 
-class SettingsTab(ttk.Frame):
-    def __init__(self, master: tk.Misc, window: "VocalWindow") -> None:
+class SettingsForm(ttk.Frame):
+    """Scrollable form for ``specs`` with Save & Apply / Revert / Show advanced.
+
+    ``above`` optionally builds a widget (e.g. a model grid) placed at the top
+    of the scrollable area so the whole tab scrolls as one.
+    """
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        window: "VocalWindow",
+        specs: list[FieldSpec],
+        above: Callable[[ttk.Frame], tk.Widget] | None = None,
+    ) -> None:
         super().__init__(master, padding=8)
         self.window = window
         self.app = window.app
-        self.fields = build_fields()
+        self.fields = specs
         self._vars: dict[str, tk.Variable] = {}
         self._widgets: dict[str, tk.Widget] = {}
-        self._advanced_frames: list[tk.Widget] = []
+        self._advanced: list[tk.Widget] = []  # rows (label/widget/tip) shown only in advanced mode
+        self._sections: list[tuple[ttk.LabelFrame, bool]] = []  # (frame, all_advanced) in display order
         self._show_advanced = tk.BooleanVar(value=False)
-        self._devices_in: list[tuple[int, str, bool]] = []
-        self._devices_out: list[tuple[int, str, bool]] = []
 
-        # Banner for CLI overrides
-        if self.app.cli_overridden:
-            names = ", ".join(sorted(self.app.cli_overridden))
+        overridden = sorted(p for p in self.app.cli_overridden if p in {s.path for s in specs})
+        if overridden:
             ttk.Label(
                 self, wraplength=700, foreground="#a15c00",
-                text=f"Values for {names} came from command-line flags. They are shown here and "
-                     "will be written to the config file if you save.",
+                text=f"Values for {', '.join(overridden)} came from command-line flags. They are shown "
+                     "here and will be written to the config file if you save.",
             ).pack(fill="x", pady=(0, 6))
 
-        # Scrollable form
         outer = ttk.Frame(self)
         outer.pack(fill="both", expand=True)
         self._canvas = tk.Canvas(outer, highlightthickness=0)
@@ -179,12 +187,14 @@ class SettingsTab(ttk.Frame):
         self._canvas.configure(yscrollcommand=scroll.set)
         self._canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
-        self._canvas.bind_all("<Button-4>", lambda e: self._canvas.yview_scroll(-3, "units"))
-        self._canvas.bind_all("<Button-5>", lambda e: self._canvas.yview_scroll(3, "units"))
+        for seq, step in (("<Button-4>", -3), ("<Button-5>", 3)):
+            self._canvas.bind(seq, lambda e, s=step: self._canvas.yview_scroll(s, "units"))
+            self._form.bind(seq, lambda e, s=step: self._canvas.yview_scroll(s, "units"))
 
+        if above is not None:
+            above(self._form).pack(fill="x", padx=4, pady=(4, 8))
         self._build_form()
 
-        # Buttons
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(8, 0))
         self._save_btn = ttk.Button(bar, text="Save & Apply", command=self.save_and_apply)
@@ -203,24 +213,27 @@ class SettingsTab(ttk.Frame):
     def _build_form(self) -> None:
         sections: dict[str, ttk.LabelFrame] = {}
         for spec in self.fields:
-            if spec.section not in sections:
+            frame = sections.get(spec.section)
+            if frame is None:
                 frame = ttk.LabelFrame(self._form, text=spec.section, padding=(10, 6))
-                frame.pack(fill="x", padx=4, pady=4)
                 frame.columnconfigure(1, weight=1)
                 sections[spec.section] = frame
-            frame = sections[spec.section]
+                self._sections.append((frame, spec.advanced))
+            elif not spec.advanced:
+                # A basic field makes the whole section visible in basic mode.
+                self._sections = [(f, adv and f is not frame) for f, adv in self._sections]
             row = max((int(w.grid_info()["row"]) for w in frame.grid_slaves()), default=-1) + 1
             label = ttk.Label(frame, text=spec.label)
             widget = self._make_widget(frame, spec)
             label.grid(row=row, column=0, sticky="w", padx=(0, 12), pady=2)
             widget.grid(row=row, column=1, sticky="ew", pady=2)
+            if spec.advanced:
+                self._advanced += [label, widget]
             if spec.help:
                 tip = ttk.Label(frame, text=spec.help, foreground="#777", wraplength=600, justify="left")
                 tip.grid(row=row + 1, column=0, columnspan=2, sticky="w", padx=(18, 0), pady=(0, 6))
                 if spec.advanced:
-                    self._advanced_frames.append(tip)
-            if spec.advanced:
-                self._advanced_frames += [label, widget]
+                    self._advanced.append(tip)
             self._widgets[spec.path] = widget
 
     def _make_widget(self, parent: tk.Misc, spec: FieldSpec) -> tk.Widget:
@@ -229,7 +242,9 @@ class SettingsTab(ttk.Frame):
             w: tk.Widget = ttk.Checkbutton(parent, variable=var)
         elif spec.kind == "choice":
             var = tk.StringVar()
-            w = ttk.Combobox(parent, textvariable=var, values=list(spec.choices or ()), state="readonly")
+            labels = spec.labels or {}
+            w = ttk.Combobox(parent, textvariable=var, state="readonly",
+                             values=[labels.get(c, c) for c in (spec.choices or ())])
         elif spec.kind in ("device_in", "device_out"):
             var = tk.StringVar()
             w = ttk.Combobox(parent, textvariable=var, values=[DEFAULT_DEVICE], state="readonly")
@@ -241,11 +256,18 @@ class SettingsTab(ttk.Frame):
 
     def _toggle_advanced(self) -> None:
         show = self._show_advanced.get()
-        for w in self._advanced_frames:
+        for w in self._advanced:
             if show:
                 w.grid()
             else:
                 w.grid_remove()
+        # Re-pack sections in declaration order so a hidden section returns to
+        # its place (pack_forget + pack would append it at the bottom).
+        for frame, _ in self._sections:
+            frame.pack_forget()
+        for frame, all_advanced in self._sections:
+            if show or not all_advanced:
+                frame.pack(fill="x", padx=4, pady=4)
 
     # ── Load / collect ───────────────────────────────────────────────
 
@@ -261,13 +283,15 @@ class SettingsTab(ttk.Frame):
             var = self._vars[spec.path]
             if spec.kind == "bool":
                 var.set(bool(value))
+            elif spec.kind == "choice":
+                var.set((spec.labels or {}).get(value, str(value)))
             elif spec.kind in ("device_in", "device_out"):
                 var.set(DEFAULT_DEVICE if value in (None, "") else str(value))
             else:
                 var.set("" if value is None else str(value))
 
     def collect(self) -> VocalConfig:
-        """Build a new config from the form. Raises ValueError with a field label on bad input."""
+        """Live config plus this form's values. Raises ValueError naming the field on bad input."""
         cfg = copy.deepcopy(self.app.config)
         for spec in self.fields:
             raw = self._vars[spec.path].get()
@@ -282,6 +306,9 @@ class SettingsTab(ttk.Frame):
     def _parse(spec: FieldSpec, raw: Any) -> Any:
         if spec.kind == "bool":
             return bool(raw)
+        if spec.kind == "choice":
+            reverse = {v: k for k, v in (spec.labels or {}).items()}
+            return reverse.get(raw, raw)
         if spec.kind in ("device_in", "device_out"):
             return None if raw in ("", DEFAULT_DEVICE) else str(raw)
         text = str(raw).strip()
@@ -294,18 +321,18 @@ class SettingsTab(ttk.Frame):
         return text
 
     def _refresh_devices(self) -> None:
+        paths = {s.path for s in self.fields}
         try:
-            from vocal.input.audio import list_input_devices
-            from vocal.output.playback import list_output_devices
-
-            self._devices_in = list_input_devices()
-            self._devices_out = list_output_devices()
+            if "input.audio.device" in paths:
+                from vocal.input.audio import list_input_devices
+                self._widgets["input.audio.device"].configure(  # type: ignore[call-arg]
+                    values=[DEFAULT_DEVICE] + [name for _, name, _ in list_input_devices()])
+            if "output.speech.device" in paths:
+                from vocal.output.playback import list_output_devices
+                self._widgets["output.speech.device"].configure(  # type: ignore[call-arg]
+                    values=[DEFAULT_DEVICE] + [name for _, name, _ in list_output_devices()])
         except Exception:  # pragma: no cover - no audio subsystem
-            self._devices_in, self._devices_out = [], []
-        self._widgets["input.audio.device"].configure(  # type: ignore[call-arg]
-            values=[DEFAULT_DEVICE] + [name for _, name, _ in self._devices_in])
-        self._widgets["output.speech.device"].configure(  # type: ignore[call-arg]
-            values=[DEFAULT_DEVICE] + [name for _, name, _ in self._devices_out])
+            pass
 
     # ── Actions ──────────────────────────────────────────────────────
 
@@ -314,24 +341,25 @@ class SettingsTab(ttk.Frame):
         if busy:
             self._status.configure(text="Applying…")
 
+    def set_status(self, text: str, error: bool = False) -> None:
+        self._status.configure(text=text, foreground="#b00020" if error else "#666")
+
     def save_and_apply(self) -> None:
         try:
             cfg = self.collect()
         except ValueError as e:
-            self._status.configure(text=str(e), foreground="#b00020")
+            self.set_status(str(e), error=True)
             return
         self.set_busy(True)
-        self._status.configure(foreground="#666")
+        self.set_status("Applying…")
 
         def done(notes: object) -> None:
             self.set_busy(False)
-            self._status.configure(text=" · ".join(notes) if isinstance(notes, list) else "Applied")
-            self.window.status.refresh_summary()
-            self.window.voices.refresh()
-            self.window.phrasebook.refresh_flags()
+            self.window.after_apply()  # reloads forms (clears status) — so set the note after
+            self.set_status(" · ".join(notes) if isinstance(notes, list) else "Applied")
 
         def failed(e: BaseException) -> None:
             self.set_busy(False)
-            self._status.configure(text=f"Failed: {e}", foreground="#b00020")
+            self.set_status(f"Failed: {e}", error=True)
 
         self.window.run_bg(lambda: self.app.apply_config(cfg), on_done=done, on_error=failed, name="apply-config")

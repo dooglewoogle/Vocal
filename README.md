@@ -83,9 +83,11 @@ Tray icon: green when listening, grey when paused, amber when loading, transcrib
 | Tab | What it does |
 |-----|--------------|
 | **Status** | Current state (Loading / Listening / Recording / Transcribing / Paused, plus Speaking), a log of recent transcriptions, Pause/Resume and Stop speaking |
-| **Settings** | Every option from the [configuration file](#configuration-file). **Save & Apply** writes `config.toml` and applies the change live: speech settings take effect immediately, dictation settings restart the dictation engine (a few seconds while the Whisper model reloads). Voice detection, post-processing and other set-once options are under **Show advanced**. |
-| **Voices & Models** | Download, remove, test and pick the default text-to-speech voice; see which Whisper models are cached and switch between them |
-| **Phrasebook** | Edit mishearing → correction rules; saving applies them without a model reload |
+| **Dictation** | Whisper model grid (cached models marked, pick the current one) and every input-side option: mode, microphone, hotkey, recording ducking, text insertion; voice detection and post-processing under **Show advanced** |
+| **Speech** | Voice grid (download, remove, test, pick the current one) and every output-side option: speed, volume, speaker, speaking ducking; server and log level under **Show advanced** |
+| **Phrasebook** | Edit mishearing → correction rules and whether they seed recognition / correct output; saving applies them without a model reload |
+
+**Save & Apply** on a tab writes `config.toml` and applies the change live: speech settings take effect immediately, dictation settings restart the dictation engine (a few seconds while the Whisper model reloads).
 
 Values passed on the command line are shown in the window and, if you save, written to the file. Saving rewrites `config.toml` without any comments you had added by hand.
 
@@ -99,18 +101,17 @@ If Tk is not installed Vocal prints a hint and runs headless. If the tray is una
 
 | Mode | Command | How it works |
 |------|---------|-------------|
-| **Live** (default) | `vocal` | Always-on; VAD detects speech boundaries automatically |
-| **Hotkey** | `vocal --hotkey` | Press hotkey to record, press again to transcribe |
-| **Push-to-talk** | `vocal --mode ptt` | Hold hotkey to record, release to transcribe |
+| **Live** (default) | `vocal` | Always-on; VAD detects speech boundaries automatically. Hold the hotkey to mute. |
+| **Hotkey** | `vocal --hotkey` | Hold the hotkey to record, release to transcribe |
 
-The mode persists as `input.engine` in the config file (or the Settings tab). Passing `--mode` or `--duck` implies `--hotkey`. Add `--live` explicitly to combine them with live mode, where the hotkey pauses/resumes listening (hold-to-mute in PTT mode).
+The mode persists as `input.engine` in the config file (or the Dictation tab). Passing `--duck` implies `--hotkey`; add `--live` explicitly to combine them.
 
 ### Volume ducking while recording
 
 In hotkey mode, `--duck` lowers the system output volume while you record so playback does not bleed into the mic, then ramps it back over ~300 ms. `--duck-amount` is a relative cut: at 50 (the default), 80% volume drops to 40%. Uses `pactl`, `wpctl`, or `amixer` on Linux and `osascript` on macOS. Live mode never ducks.
 
 ```bash
-vocal --hotkey --mode ptt --duck --duck-amount 70
+vocal --hotkey --duck --duck-amount 70
 ```
 
 ### Text injection
@@ -237,8 +238,7 @@ General:
 
 Dictation:
   --live / --hotkey         Engine (default: live)
-  --mode {toggle,ptt}       Hotkey behaviour (implies --hotkey)
-  --key KEY                 Hotkey name: PAUSE, F18, SCROLLLOCK, …
+  --key KEY                 Hotkey name: PAUSE, F18, SCROLLLOCK, … (hold to record / hold to mute)
   --hotkey-backend {auto,evdev,pynput}
   --duck / --duck-amount    Duck system volume while recording (hotkey mode)
   --output {clipboard,xdotool}
@@ -280,8 +280,7 @@ beam_size = 3
 # device = "pulse"          # name substring or index from --list-devices
 
 [input.hotkey]
-key = "PAUSE"
-mode = "toggle"             # or "ptt"
+key = "PAUSE"               # hold to record (hotkey mode) or hold to mute (live mode)
 backend = "auto"            # auto | evdev | pynput
 duck = false                # duck system volume while recording
 duck_amount = 50

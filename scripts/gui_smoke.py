@@ -55,15 +55,19 @@ def log(msg: str) -> None:
 def shot(name: str) -> None:
     try:
         from PIL import ImageGrab
-        ids = subprocess.run(["xdotool", "search", "--name", "^Vocal$"], capture_output=True, text=True).stdout.split()
+        ids = subprocess.run(["xdotool", "search", "--pid", str(os.getpid()), "--name", "^Vocal$"],
+                             capture_output=True, text=True).stdout.split()
         best = None
+        best_id = ids[0] if ids else None
         for wid in ids:
             geo = subprocess.run(["xdotool", "getwindowgeometry", "--shell", wid], capture_output=True, text=True).stdout
             vals = dict(l.split("=") for l in geo.strip().splitlines() if "=" in l)
             cand = (int(vals["X"]), int(vals["Y"]), int(vals["WIDTH"]), int(vals["HEIGHT"]))
             if best is None or cand[2] * cand[3] > best[2] * best[3]:
-                best = cand
+                best, best_id = cand, wid
         x, y, w, h = best
+        subprocess.run(["xdotool", "windowraise", best_id], capture_output=True)
+        time.sleep(0.3)
         ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(OUT / f"{name}.png")
         log(f"screenshot {name} ({w}x{h})")
     except Exception as e:
@@ -101,6 +105,8 @@ def ui(window, fn):
 def driver(window) -> None:
     app: VocalApp = window.app
     try:
+        # Park the window away from the default spot so a user-run Vocal window can't cover it in screenshots.
+        ui(window, lambda: (window.root.geometry("760x560+2900+300"), window.root.lift()))
         log(f"initial state={app.state.value} label={ui(window, lambda: window.status._state_label.cget('text'))!r}")
         for _ in range(300):
             if app.state.value == "listening":
@@ -146,28 +152,31 @@ def driver(window) -> None:
         log(f"after speech: is_speaking={app.is_speaking} label={ui(window, lambda: window.status._speaking_label.cget('text'))!r}")
 
         # ── Settings: change speed + hotkey key, Save & Apply ──
-        ui(window, lambda: window.notebook.select(window.settings))
-        ui(window, lambda: window.settings._show_advanced.set(True) or window.settings._toggle_advanced())
-        shot("2-settings")
-        ui(window, lambda: window.settings._vars["output.speech.speed"].set("1.15"))
-        ui(window, lambda: window.settings._vars["input.hotkey.key"].set("F23"))
-        ui(window, lambda: window.settings.save_and_apply())
+        ui(window, lambda: window.notebook.select(window.dictation))
+        ui(window, lambda: window.dictation.form._show_advanced.set(True) or window.dictation.form._toggle_advanced())
+        shot("2-dictation")
+        ui(window, lambda: window.dictation.form._vars["input.hotkey.key"].set("F23"))
+        ui(window, lambda: window.dictation.form.save_and_apply())
         time.sleep(5)
         cfg_on_disk = load_config(CONFIG_PATH)
-        log(f"settings applied: speed={app.config.output.speech.speed} key={app.config.input.hotkey.key} "
-            f"disk speed={cfg_on_disk.output.speech.speed} disk key={cfg_on_disk.input.hotkey.key} "
-            f"status={ui(window, lambda: window.settings._status.cget('text'))!r}")
+        log(f"dictation settings applied: key={app.config.input.hotkey.key} disk key={cfg_on_disk.input.hotkey.key} "
+            f"status={ui(window, lambda: window.dictation.form._status.cget('text'))!r}")
         log(f"engine after rebuild: state={app.state.value} rebuilding={app.is_rebuilding}")
-
-        # ── Voices: select default voice, Test ──
-        ui(window, lambda: window.notebook.select(window.voices))
-        ui(window, lambda: window.voices._voices.selection_set("piper-en-lessac-medium"))
-        shot("3-voices")
-        ui(window, lambda: window.voices._test())
-        time.sleep(3.5)
-        log(f"voice test status: {ui(window, lambda: window.voices._voice_status.cget('text'))!r}")
-        models_cached = ui(window, lambda: {i: window.voices._models.set(i, 'cached') for i in window.voices._models.get_children()})
+        models_cached = ui(window, lambda: {i: window.dictation._models.set(i, 'cached') for i in window.dictation._models.get_children()})
         log(f"whisper cached marks: { {k: v for k, v in models_cached.items() if v} }")
+
+        # ── Speech: speed setting, select voice, Test ──
+        ui(window, lambda: window.notebook.select(window.speech))
+        ui(window, lambda: window.speech.form._vars["output.speech.speed"].set("1.15"))
+        ui(window, lambda: window.speech.form.save_and_apply())
+        time.sleep(1.5)
+        log(f"speech settings applied: speed={app.config.output.speech.speed} disk={load_config(CONFIG_PATH).output.speech.speed} "
+            f"engines built={len([t for t in threading.enumerate() if t.name == 'engine'])}")
+        ui(window, lambda: window.speech._voices.selection_set("piper-en-lessac-medium"))
+        shot("3-speech")
+        ui(window, lambda: window.speech._test())
+        time.sleep(3.5)
+        log(f"voice test status: {ui(window, lambda: window.speech._voice_status.cget('text'))!r}")
 
         # ── Phrasebook: add rule, save ──
         ui(window, lambda: window.notebook.select(window.phrasebook))
