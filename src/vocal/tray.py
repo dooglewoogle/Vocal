@@ -36,6 +36,7 @@ APP_TITLE = "Vocal"
 # State → asset filename. Recording reuses the awake icon so a momentary
 # capture doesn't flash a third icon; TRANSCRIBING uses busy.
 _ASSET_FOR_STATE: dict[DictationState, str] = {
+    DictationState.LOADING: "vocal-busy.png",
     DictationState.SLEEPING: "vocal-sleep.png",
     DictationState.LISTENING: "vocal-awake.png",
     DictationState.RECORDING: "vocal-awake.png",
@@ -43,6 +44,7 @@ _ASSET_FOR_STATE: dict[DictationState, str] = {
 }
 
 _STATE_LABEL: dict[DictationState, str] = {
+    DictationState.LOADING: "Loading model...",
     DictationState.SLEEPING: "Paused",
     DictationState.LISTENING: "Listening",
     DictationState.RECORDING: "Recording",

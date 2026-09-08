@@ -133,6 +133,7 @@ class DictationEngine(BaseDictationEngine):
         """Start all threads and block on the hotkey listener (main thread)."""
         self._transcriber.load()
         self._audio.start()
+        self._set_state(self._idle_state)
         self._start_workers()
         self._install_signal_handlers()
 

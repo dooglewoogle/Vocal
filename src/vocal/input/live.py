@@ -269,6 +269,7 @@ class LiveDictationEngine(BaseDictationEngine):
         """Load model, start all threads, block until shutdown."""
         self._transcriber.load()
         self._open_stream(resolve_device(self._config.input.audio.device))
+        self._set_state(self._idle_state)
 
         self._start_workers((self._vad_worker, "vad"))
         self._install_signal_handlers()

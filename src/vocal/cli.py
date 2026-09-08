@@ -384,10 +384,11 @@ def _apply_cli_overrides(config: VocalConfig, args: argparse.Namespace) -> set[s
     return touched
 
 
-def _run_daemon(config: VocalConfig, overridden: set[str], headless: bool) -> None:
+def _run_daemon(config: VocalConfig, args: argparse.Namespace, overridden: set[str], headless: bool) -> None:
     from vocal.app import VocalApp
 
-    app = VocalApp(config, cli_overridden=overridden)
+    config_path = Path(args.config) if args.config else CONFIG_PATH
+    app = VocalApp(config, config_path=config_path, cli_overridden=overridden)
     if headless:
         from vocal.tray import TrayIcon
 
@@ -476,4 +477,4 @@ def main() -> None:
         else:
             logger.info("Ducking enabled: -%d%% via %s", config.input.hotkey.duck_amount, backend.tool)
 
-    _run_daemon(config, overridden, headless)
+    _run_daemon(config, args, overridden, headless)

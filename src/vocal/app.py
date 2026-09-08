@@ -19,6 +19,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import asdict
+from pathlib import Path
 
 from vocal.config import (
     CONFIG_PATH,
@@ -85,6 +86,7 @@ class VocalApp:
         self,
         config: VocalConfig,
         *,
+        config_path: Path | None = None,
         cli_overridden: Iterable[str] = (),
         # Injection points for tests; production uses the real classes.
         engine_factory: Callable[..., BaseDictationEngine] | None = None,
@@ -94,6 +96,7 @@ class VocalApp:
         ducker_available: Callable[[], bool] | None = None,
     ) -> None:
         self.config = config
+        self.config_path: Path = config_path or CONFIG_PATH
         self.cli_overridden: set[str] = set(cli_overridden)
 
         self.on_state = Signal("on_state")  # (DictationState)
@@ -132,7 +135,7 @@ class VocalApp:
     @property
     def state(self) -> DictationState:
         engine = self._engine
-        return engine.current_state if engine is not None else DictationState.LISTENING
+        return engine.current_state if engine is not None else DictationState.LOADING
 
     @property
     def is_speaking(self) -> bool:
@@ -186,8 +189,8 @@ class VocalApp:
         """
         changed = changed_paths(asdict(self.config), asdict(new))
         notes: list[str] = []
-        save_config(new)
-        notes.append(f"Saved {CONFIG_PATH}")
+        save_config(new, self.config_path)
+        notes.append(f"Saved {self.config_path}")
         if not changed:
             return notes
         copy_into(self.config, new)
@@ -361,7 +364,7 @@ class VocalApp:
                 if self.speech.is_speaking and self.config.output.speech.pause_input:
                     new.suppress_input()
                 new.start()
-                self.on_state.emit(DictationState.LISTENING)
+                self.on_state.emit(new.current_state)  # LOADING until the model is in
             except Exception:
                 logger.exception("Engine rebuild failed")
                 raise

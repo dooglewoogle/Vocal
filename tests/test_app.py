@@ -141,8 +141,11 @@ def _app(**cfg_edits) -> VocalApp:
         for p in parts[:-1]:
             obj = getattr(obj, p)
         setattr(obj, parts[-1], value)
+    import vocal.app as app_mod
+
     app = VocalApp(
         cfg,
+        config_path=app_mod.CONFIG_PATH,
         engine_factory=FakeEngine,
         speech_factory=FakeSpeech,
         server_factory=FakeServer,

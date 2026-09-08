@@ -61,7 +61,7 @@ class BaseDictationEngine(ABC):
         self._threads: list[threading.Thread] = []
 
         # Canonical state. Subclasses own the lock; base just reads/writes under it.
-        self._state: DictationState = DictationState.LISTENING
+        self._state: DictationState = DictationState.LOADING
         self._state_lock = threading.Lock()
 
     # ── Input suppression (used while text-to-speech is playing) ────
