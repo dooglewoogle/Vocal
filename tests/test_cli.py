@@ -102,3 +102,13 @@ def test_cli_overrides_report_paths() -> None:
     cfg2.input.engine = "hotkey"
     assert _apply_cli_overrides(cfg2, parse_args([])) == set()
     assert cfg2.input.engine == "hotkey"  # file value survives when no flag given
+
+
+def test_install_desktop_parsing() -> None:
+    from vocal.cli import parse_args
+
+    a = parse_args(["install-desktop"])
+    assert a.command == "install-desktop" and a.autostart is None and a.uninstall is False
+    assert parse_args(["install-desktop", "--autostart"]).autostart is True
+    assert parse_args(["install-desktop", "--no-autostart"]).autostart is False
+    assert parse_args(["install-desktop", "--uninstall"]).uninstall is True

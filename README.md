@@ -33,6 +33,8 @@ sudo apt install xdotool xclip portaudio19-dev python3-tk \
 sudo apt install wtype wl-clipboard
 # Optional: OS text-to-speech fallback
 sudo apt install espeak-ng
+# For the global hotkey on Linux (see below)
+sudo apt install python3-dev
 ```
 
 Or run the setup script:
@@ -41,17 +43,29 @@ Or run the setup script:
 ./scripts/setup-permissions.sh
 ```
 
-This also adds your user to the `input` group (required for global hotkeys via evdev). Log out and back in after.
+This also adds your user to the `input` group (required for the evdev hotkey backend). Log out and back in after.
 
 ### 2. Install Vocal
 
 ```bash
-python -m venv .venv
+python3 -m venv --system-site-packages .venv   # lets the tray see the system python3-gi
 source .venv/bin/activate
 pip install '.[tts-piper]'          # dictation + Piper speech (recommended)
 # pip install '.[tts]'              # Piper + Kokoro
+# pip install '.[all]'              # everything, including the Linux hotkey backend (needs python3-dev)
 # pip install .                     # dictation only; speech falls back to OS TTS
 ```
+
+`--system-site-packages` is optional: Vocal also finds a system PyGObject on its own when it was built for the same Python version. Without either, the window still runs but there is no tray icon.
+
+### Global hotkey backends
+
+| Backend | Platforms | Install | Notes |
+|---------|-----------|---------|-------|
+| **evdev** | Linux, X11 and Wayland | `pip install '.[hotkey]'` | Reads `/dev/input`; your user must be in the `input` group |
+| **pynput** | X11, macOS, Windows | included on macOS/Windows; part of `[hotkey]` on Linux | Cannot capture keys under Wayland |
+
+On Linux both backends need the `evdev` C extension (pynput depends on it), which has no prebuilt wheels: install `python3-dev` and a compiler before `pip install '.[hotkey]'`. Without the extra, Linux has **no global hotkey**: live dictation works, but hotkey mode cannot record and hold-to-mute does nothing. Vocal logs which backend it picked. Text insertion never depends on either; it uses `xdotool`/`xclip` or `wtype`/`wl-clipboard`.
 
 ## Quick start
 
@@ -230,6 +244,7 @@ vocal say [-i] [--voice V] [TEXT…]  speak TEXT, or stdin if omitted / '-'
 vocal stop
 vocal status
 vocal models [list | download NAME | remove NAME]
+vocal install-desktop [--autostart | --no-autostart | --uninstall]
 
 General:
   --headless                Tray icon only, no settings window
@@ -344,12 +359,15 @@ The tray icon shows the current state and offers **Open Vocal**, **Pause/Resume*
 | GNOME | Requires the [AppIndicator and KStatusNotifierItem Support](https://extensions.gnome.org/extension/615/appindicator-support/) extension |
 | Sway / i3 | Requires a status bar with StatusNotifierItem support (e.g. waybar) |
 
-## Run at login
+## App menu and run at login
 
 ```bash
-cp packaging/vocal-autostart.desktop ~/.config/autostart/     # autostart
-cp packaging/vocal.desktop ~/.local/share/applications/       # app menu
+vocal install-desktop               # app-menu entry + icon, pointing at this venv's vocal
+vocal install-desktop --autostart   # …and start Vocal when you log in
+vocal install-desktop --uninstall
 ```
+
+The **Start Vocal at login** checkbox on the Status tab does the same. Entries are written to `~/.local/share/applications/` and `~/.config/autostart/` with the absolute path of the installed executable, so the venv does not need to be on your PATH.
 
 ## Logs
 

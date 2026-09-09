@@ -25,6 +25,10 @@ case "$(uname -s)" in
         if ! dpkg -s python3-tk >/dev/null 2>&1; then
             MISSING+=("python3-tk")
         fi
+        # Needed to build the Linux hotkey extra (pip install '.[hotkey]')
+        if ! dpkg -s "python3-dev" >/dev/null 2>&1; then
+            MISSING+=("python3-dev")
+        fi
         if ! dpkg -l gir1.2-ayatanaappindicator3-0.1 &>/dev/null 2>&1; then
             MISSING+=("gir1.2-ayatanaappindicator3-0.1")
         fi

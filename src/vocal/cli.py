@@ -5,6 +5,7 @@
     vocal stop                    stop speaking
     vocal status                  daemon speech status
     vocal models list|download|remove
+    vocal install-desktop [--autostart | --no-autostart | --uninstall]
 """
 
 from __future__ import annotations
@@ -153,6 +154,14 @@ def build_parser() -> argparse.ArgumentParser:
     dl.add_argument("name")
     rm = msub.add_parser("remove", help="Delete a downloaded voice")
     rm.add_argument("name")
+
+    desk = sub.add_parser("install-desktop", help="Add Vocal to the app menu (Linux) and optionally start it at login")
+    auto = desk.add_mutually_exclusive_group()
+    auto.add_argument("--autostart", dest="autostart", action="store_true", default=None,
+                      help="Also start Vocal when you log in")
+    auto.add_argument("--no-autostart", dest="autostart", action="store_false",
+                      help="Remove the start-at-login entry, keep the app-menu entry")
+    desk.add_argument("--uninstall", action="store_true", help="Remove the menu entry, icon and autostart entry")
     return parser
 
 
@@ -322,6 +331,23 @@ def _cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_install_desktop(args: argparse.Namespace) -> int:
+    from vocal import desktop
+
+    if not desktop.supported():
+        print("Desktop entries are only supported on Linux.", file=sys.stderr)
+        return 1
+    if args.uninstall:
+        removed = desktop.uninstall()
+        print("Removed:\n  " + "\n  ".join(map(str, removed)) if removed else "Nothing to remove.")
+        return 0
+    written = desktop.install(autostart=args.autostart)
+    print(f"Launch command: {desktop.vocal_command()}")
+    print("Wrote:\n  " + "\n  ".join(map(str, written)))
+    print("Start at login: " + ("on" if desktop.is_autostart_enabled() else "off"))
+    return 0
+
+
 # ── Daemon ──────────────────────────────────────────────────────────
 
 
@@ -414,6 +440,8 @@ def main() -> None:
         sys.exit(_cmd_status(args))
     if args.command == "models":
         sys.exit(_cmd_models(args))
+    if args.command == "install-desktop":
+        sys.exit(_cmd_install_desktop(args))
 
     if args.list_devices:
         list_audio_devices()

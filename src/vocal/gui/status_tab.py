@@ -72,8 +72,19 @@ class StatusTab(ttk.Frame):
         scroll.pack(side="right", fill="y")
         self._text.tag_configure("time", foreground="#888")
 
-        self._hint = ttk.Label(self, text="", foreground="#666")
-        self._hint.pack(fill="x", pady=(8, 0))
+        bottom = ttk.Frame(self)
+        bottom.pack(fill="x", pady=(8, 0))
+        self._hint = ttk.Label(bottom, text="", foreground="#666")
+        self._hint.pack(side="left")
+        from vocal import desktop
+
+        if desktop.supported():
+            self._autostart = tk.BooleanVar(value=desktop.is_autostart_enabled())
+            tip(ttk.Checkbutton(bottom, text="Start Vocal at login", variable=self._autostart,
+                                command=self._toggle_autostart),
+                "Write a freedesktop autostart entry (and an app-menu entry with icon) pointing at this "
+                "installation of Vocal, so it launches with your session. Same as `vocal install-desktop --autostart`."
+                ).pack(side="right")
 
     # ── Updates (UI thread) ──────────────────────────────────────────
 
@@ -136,6 +147,16 @@ class StatusTab(ttk.Frame):
             text="Resume" if self._state == DictationState.SLEEPING else "Pause",
             state="disabled" if (self._rebuilding or self._state == DictationState.LOADING
                                  or self.app.config.input.engine != "live") else "normal",
+        )
+
+    def _toggle_autostart(self) -> None:
+        from vocal import desktop
+
+        enabled = self._autostart.get()
+        self.window.run_bg(
+            lambda: desktop.set_autostart(enabled),
+            on_error=lambda e: (self._autostart.set(not enabled), self._hint.configure(text=f"Autostart failed: {e}")),
+            name="autostart",
         )
 
     def _toggle_pause(self) -> None:

@@ -25,3 +25,9 @@ Patterns from user corrections. Read at session start.
 **Mistake:** kept `output.speech.backend` as a setting although the chosen voice already determines the backend; and used a "Show advanced" checkbox that sprinkled extra rows into every section.
 **Rule:** a config key that is derivable from another key is not a setting — delete it. Advanced options live in one collapsed block, not interleaved with basics; the basic block should be short enough to read at a glance.
 **Trigger:** any field whose value could be computed from the current config, or any UI toggle that changes the shape of several sections at once.
+
+## 2026-09-10 — distribution review
+
+**Mistake:** asserted "pynput is the fallback when evdev is missing on Linux" from reading our own code, without checking pynput's own dependencies. pynput requires evdev on Linux, so the fallback did not exist for a pip install.
+**Rule:** before claiming an install-time fallback, do the install in a fresh venv and read `pip show <dep>` for the transitive requirements. Our code's fallback path is irrelevant if the package manager pulls the heavy dependency anyway.
+**Trigger:** any statement of the form "X is optional because we fall back to Y" about a third-party package.
