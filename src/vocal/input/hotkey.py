@@ -5,9 +5,11 @@ Hold-to-talk only: ``on_start`` fires on key down, ``on_stop`` on key up.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import select
 import sys
+import threading
 from collections.abc import Callable
 
 from vocal.config import HotkeyConfig
@@ -189,49 +191,69 @@ class PynputHotkeyListener:
             self._listener.stop()
 
 
-def _auto_detect_backend() -> str:
-    """Pick the best hotkey backend for the current platform."""
-    if sys.platform == "linux":
-        try:
-            import evdev  # noqa: F401
-            return "evdev"
-        except ImportError:
-            from vocal.utils import is_wayland
+class NullHotkeyListener:
+    """Used when no backend is importable: never fires, blocks until stopped."""
 
-            if is_wayland():
-                logger.warning(
-                    "evdev not available and pynput does not support Wayland "
-                    "keyboard capture — install python-evdev "
-                    "(pip install evdev) and add your user to the 'input' group"
-                )
-            else:
-                logger.info("evdev not available, falling back to pynput")
-            return "pynput"
-    # macOS, Windows — pynput is the cross-platform option
-    return "pynput"
+    def __init__(self, config: HotkeyConfig, on_start: Callable[[], None], on_stop: Callable[[], None]) -> None:
+        self._stop = threading.Event()
+
+    def run(self) -> None:
+        self._stop.wait()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
+INSTALL_HINT = (
+    "pip install 'vocal[hotkey]' (Linux: needs python3-dev and a C compiler, and your user in the "
+    "'input' group)"
+)
+
+
+def _importable(module: str) -> bool:
+    try:
+        importlib.import_module(module)
+        return True
+    except ImportError:
+        return False
+
+
+def available_backends() -> list[str]:
+    """Backends whose Python package is importable, best first."""
+    out: list[str] = []
+    if sys.platform == "linux" and _importable("evdev"):
+        out.append("evdev")
+    if _importable("pynput"):
+        out.append("pynput")
+    return out
 
 
 def create_listener(
     config: HotkeyConfig,
     on_start: Callable[[], None],
     on_stop: Callable[[], None],
-) -> EvdevHotkeyListener | PynputHotkeyListener:
-    """Create the appropriate hotkey listener based on config."""
+) -> EvdevHotkeyListener | PynputHotkeyListener | NullHotkeyListener:
+    """Create the best available hotkey listener, or a no-op one with a clear warning."""
+    from vocal.utils import is_wayland
+
+    available = available_backends()
     backend = config.backend
     if backend == "auto":
-        backend = _auto_detect_backend()
+        backend = available[0] if available else "none"
         logger.info("Auto-detected hotkey backend: %s", backend)
+    elif backend not in ("evdev", "pynput"):
+        raise ValueError(f"Unknown hotkey backend: {config.backend!r}")
+    elif backend not in available:
+        logger.warning("Hotkey backend %r requested but not installed", backend)
+        backend = "none"
 
     if backend == "evdev":
         return EvdevHotkeyListener(config, on_start, on_stop)
-    elif backend == "pynput":
-        from vocal.utils import is_wayland
-
+    if backend == "pynput":
         if is_wayland():
-            logger.warning(
-                "pynput does not support Wayland keyboard capture; "
-                "hotkeys will likely not work — consider backend = \"evdev\""
-            )
+            logger.warning("pynput cannot capture keys under Wayland; the hotkey will likely not work — "
+                           "use the evdev backend (%s)", INSTALL_HINT)
         return PynputHotkeyListener(config, on_start, on_stop)
-    else:
-        raise ValueError(f"Unknown hotkey backend: {config.backend!r}")
+    logger.warning("No hotkey backend installed: the hotkey does nothing. Live dictation still works. "
+                   "To enable it: %s", INSTALL_HINT)
+    return NullHotkeyListener(config, on_start, on_stop)

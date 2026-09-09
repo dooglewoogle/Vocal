@@ -8,7 +8,7 @@ from collections.abc import Callable
 from vocal.input.audio import AudioBuffer, AudioCapture
 from vocal.input.base_engine import BaseDictationEngine
 from vocal.config import VocalConfig
-from vocal.input.hotkey import create_listener
+from vocal.input.hotkey import NullHotkeyListener, create_listener
 from vocal.input.phrasebook import Phrasebook
 from vocal.state import DictationState
 from vocal.volume import Ducker, detect_backend
@@ -54,6 +54,12 @@ class DictationEngine(BaseDictationEngine):
             on_start=self._on_recording_start,
             on_stop=self._on_recording_stop,
         )
+        if isinstance(self._listener, NullHotkeyListener):
+            from vocal.notify import notify
+
+            notify("Vocal — hotkey unavailable",
+                   "No hotkey backend is installed, so hotkey mode cannot record. Switch to live mode or "
+                   "install the hotkey extra.", urgency="critical")
 
         # Volume ducking (optional)
         self._ducker: Ducker | None = None
