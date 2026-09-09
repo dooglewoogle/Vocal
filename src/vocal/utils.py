@@ -153,6 +153,48 @@ def check_dependencies(output_method: str = "clipboard") -> list[str]:
     return missing
 
 
+def find_system_gi(candidates: list[str] | None = None, cache_tag: str | None = None) -> str | None:
+    """Directory holding a system PyGObject (``gi``) built for *this* interpreter, or None.
+
+    A plain venv cannot see distro packages, and PyGObject is rarely pip-installed
+    (it needs GObject/cairo headers to build). If the system copy was compiled for
+    the same CPython version we are running, it is safe to import it from its
+    distro location; the ``_gi.<cache_tag>-*.so`` filename is the compatibility check.
+    """
+    tag = cache_tag or sys.implementation.cache_tag
+    ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    dirs = candidates if candidates is not None else [
+        "/usr/lib/python3/dist-packages",  # Debian / Ubuntu
+        f"/usr/lib/{ver}/site-packages",  # Arch and friends
+        f"/usr/lib64/{ver}/site-packages",  # Fedora / openSUSE
+    ]
+    for d in dirs:
+        gi_dir = Path(d) / "gi"
+        if gi_dir.is_dir() and any(gi_dir.glob(f"_gi.{tag}*")):
+            return d
+    return None
+
+
+def borrow_system_gi() -> bool:
+    """Make the system ``gi`` importable from a venv when versions match. Returns True if usable."""
+    try:
+        import gi  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    location = find_system_gi()
+    if location is None or location in sys.path:
+        return False
+    sys.path.append(location)
+    try:
+        import gi  # noqa: F401
+    except ImportError:
+        sys.path.remove(location)
+        return False
+    logging.getLogger(__name__).info("Using system PyGObject from %s (venv without system site-packages)", location)
+    return True
+
+
 def check_tray_dependencies() -> list[str]:
     """Check for tray-mode dependencies. Returns human-readable missing items.
 
@@ -168,12 +210,15 @@ def check_tray_dependencies() -> list[str]:
         missing.append("Pillow (pip install Pillow)")
 
     if sys.platform == "linux":
-        try:
-            import gi  # noqa: F401
-        except ImportError:
-            missing.append("python3-gi (apt install python3-gi)")
+        if not borrow_system_gi():
+            missing.append(
+                "python3-gi (apt install python3-gi). If it is installed but this is a venv, either "
+                "recreate the venv with `python3 -m venv --system-site-packages .venv` or use the same "
+                f"Python version as the system's (this is {sys.version.split()[0]})"
+            )
             # Can't check further without gi; pystray will also fail.
             return missing
+        import gi
 
         # Probe for Ayatana (preferred) then legacy AppIndicator3.
         has_indicator = False
