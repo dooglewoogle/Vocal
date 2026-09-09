@@ -23,49 +23,44 @@ No cloud, no GPU, no latency surprises. A settings window is the main control su
 
 ## Installation
 
-### 1. System dependencies
-
 ```bash
-# X11
-sudo apt install xdotool xclip portaudio19-dev python3-tk \
-    python3-gi gir1.2-ayatanaappindicator3-0.1 libnotify-bin
-# Wayland: replace xdotool xclip with
-sudo apt install wtype wl-clipboard
-# Optional: OS text-to-speech fallback
-sudo apt install espeak-ng
-# For the global hotkey on Linux (see below)
-sudo apt install python3-dev
+git clone https://github.com/dooglewoogle/Vocal.git
+cd Vocal
+./install.sh
 ```
 
-Or run the setup script:
+That is the whole install. The script installs the system packages (asks for `sudo` once), adds you to the `input` group for the global hotkey, creates a virtual environment under `~/.local/share/vocal`, installs Vocal with both speech engines and the hotkey backend, links `vocal` into `~/.local/bin`, adds an app-menu entry and starts Vocal at login. Log out and back in once afterwards so the `input` group applies.
+
+Options: `--no-autostart` (don't start at login), `--no-system` (you already installed the system packages, or have no `sudo`), `--dev` (editable install for hacking on Vocal). Linux with `apt` and macOS with Homebrew are supported; other distros get a list of packages to install by hand.
+
+First run downloads the Whisper model (~500 MB for `small.en`) and, on the first `say`, the default Piper voice (~65 MB). Subsequent runs start in seconds.
+
+<details>
+<summary>Manual install (what the script does)</summary>
 
 ```bash
-./scripts/setup-permissions.sh
+# Debian / Ubuntu
+sudo apt install python3-venv python3-dev python3-tk python3-gi gir1.2-ayatanaappindicator3-0.1 \
+    portaudio19-dev libnotify-bin espeak-ng xdotool xclip wtype wl-clipboard
+sudo usermod -aG input $USER           # global hotkey reads /dev/input; re-login afterwards
+
+python3 -m venv --system-site-packages .venv   # system-site-packages lets the tray see python3-gi
+.venv/bin/pip install '.[hotkey]'              # drop [hotkey] to skip the compiled evdev backend
+.venv/bin/vocal install-desktop --autostart    # app-menu entry + start at login (optional)
 ```
 
-This also adds your user to the `input` group (required for the evdev hotkey backend). Log out and back in after.
-
-### 2. Install Vocal
-
-```bash
-python3 -m venv --system-site-packages .venv   # lets the tray see the system python3-gi
-source .venv/bin/activate
-pip install '.[tts-piper]'          # dictation + Piper speech (recommended)
-# pip install '.[tts]'              # Piper + Kokoro
-# pip install '.[all]'              # everything, including the Linux hotkey backend (needs python3-dev)
-# pip install .                     # dictation only; speech falls back to OS TTS
-```
-
-`--system-site-packages` is optional: Vocal also finds a system PyGObject on its own when it was built for the same Python version. Without either, the window still runs but there is no tray icon.
+`--system-site-packages` is a convenience: Vocal also finds a system PyGObject on its own when it was built for the same Python version. Without either, the window still runs but there is no tray icon.
 
 ### Global hotkey backends
 
 | Backend | Platforms | Install | Notes |
 |---------|-----------|---------|-------|
-| **evdev** | Linux, X11 and Wayland | `pip install '.[hotkey]'` | Reads `/dev/input`; your user must be in the `input` group |
+| **evdev** | Linux, X11 and Wayland | `[hotkey]` extra | Reads `/dev/input`; your user must be in the `input` group |
 | **pynput** | X11, macOS, Windows | included on macOS/Windows; part of `[hotkey]` on Linux | Cannot capture keys under Wayland |
 
-On Linux both backends need the `evdev` C extension (pynput depends on it), which has no prebuilt wheels: install `python3-dev` and a compiler before `pip install '.[hotkey]'`. Without the extra, Linux has **no global hotkey**: live dictation works, but hotkey mode cannot record and hold-to-mute does nothing. Vocal logs which backend it picked. Text insertion never depends on either; it uses `xdotool`/`xclip` or `wtype`/`wl-clipboard`.
+On Linux both backends need the `evdev` C extension (pynput depends on it), which has no prebuilt wheels: `python3-dev` and a compiler must be present when installing `[hotkey]`. Without the extra, Linux has **no global hotkey**: live dictation works, but hotkey mode cannot record and hold-to-mute does nothing. Vocal logs which backend it picked. Text insertion never depends on either; it uses `xdotool`/`xclip` or `wtype`/`wl-clipboard`.
+
+</details>
 
 ## Quick start
 
@@ -83,8 +78,6 @@ vocal --hotkey
 vocal say "Build finished."
 echo "Or pipe text in." | vocal say
 ```
-
-First run downloads the Whisper model (~500 MB for `small.en`) and, on the first `say`, the default Piper voice (~65 MB). Subsequent runs start in seconds.
 
 Tray icon: green when listening, grey when paused, amber when loading, transcribing or speaking.
 
@@ -367,7 +360,7 @@ vocal install-desktop --autostart   # …and start Vocal when you log in
 vocal install-desktop --uninstall
 ```
 
-The **Start Vocal at login** checkbox on the Status tab does the same. Entries are written to `~/.local/share/applications/` and `~/.config/autostart/` with the absolute path of the installed executable, so the venv does not need to be on your PATH.
+`install.sh` runs this for you; the **Start Vocal at login** checkbox on the Status tab does the same. Entries are written to `~/.local/share/applications/` and `~/.config/autostart/` with the absolute path of the installed executable, so the venv does not need to be on your PATH.
 
 ## Logs
 

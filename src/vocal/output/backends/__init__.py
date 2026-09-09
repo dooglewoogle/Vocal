@@ -40,8 +40,8 @@ def resolve_backend(name: str, *, fallback: bool = True) -> TTSBackend:
         return cls()
 
     hint = {
-        "piper": "pip install 'vocal[tts-piper]'",
-        "kokoro": "pip install 'vocal[tts-kokoro]'",
+        "piper": "pip install piper-tts (it is a default dependency; the install is incomplete)",
+        "kokoro": "pip install kokoro-onnx (it is a default dependency; the install is incomplete)",
         "system": "install espeak-ng (Linux); say/PowerShell are built in on macOS/Windows",
     }[name]
     if not fallback or name == "system":

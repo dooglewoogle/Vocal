@@ -43,7 +43,7 @@ class KokoroBackend(TTSBackend):
         try:
             from kokoro_onnx import Kokoro
         except ImportError as e:  # pragma: no cover
-            raise BackendUnavailable("pip install 'vocal[tts-kokoro]'") from e
+            raise BackendUnavailable("pip install kokoro-onnx") from e
 
         directory = model if model.is_dir() else model.parent
         onnx = model if model.is_file() else find_one(directory, ".onnx")

@@ -38,7 +38,7 @@ class PiperBackend(TTSBackend):
         try:
             from piper import PiperVoice
         except ImportError as e:  # pragma: no cover - exercised via is_available
-            raise BackendUnavailable("pip install 'vocal[tts-piper]'") from e
+            raise BackendUnavailable("pip install piper-tts") from e
 
         onnx = find_one(model, ".onnx") if model.is_dir() else model
         config = onnx.with_name(onnx.name + ".json")

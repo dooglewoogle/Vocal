@@ -18,18 +18,18 @@ dependencies = [
     "huggingface_hub>=0.20",
     "tomli>=2.0.0; python_version < '3.11'",
     "tomli-w>=1.0",
+    # Text-to-speech engines. Voice model files download on first use, so
+    # including both costs only their Python packages.
+    "piper-tts>=1.7.0",
+    "kokoro-onnx>=0.6.1",
 ]
 
 [project.optional-dependencies]
-tts-piper = ["piper-tts>=1.7.0"]
-tts-kokoro = ["kokoro-onnx>=0.6.1"]
-tts = ["vocal[tts-piper,tts-kokoro]"]
 # Linux global hotkey. Both evdev (X11 + Wayland, reads /dev/input) and pynput
 # (X11 only) need the evdev C extension, which has no wheels: python3-dev and a
 # compiler are required to build it. Without this extra Linux has no hotkey;
 # live dictation still works. macOS/Windows get pynput from the base install.
 hotkey = ["evdev>=1.7.0; sys_platform == 'linux'", "pynput>=1.7.6; sys_platform == 'linux'"]
-all = ["vocal[tts,hotkey]"]
 
 [project.scripts]
 vocal = "vocal.cli:main"
