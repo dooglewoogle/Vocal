@@ -31,7 +31,7 @@ cd Vocal
 
 That is the whole install. The script installs the system packages (asks for `sudo` once), adds you to the `input` group for the global hotkey, creates a virtual environment under `~/.local/share/vocal`, installs Vocal with both speech engines and the hotkey backend, links `vocal` into `~/.local/bin`, adds an app-menu entry and starts Vocal at login. Log out and back in once afterwards so the `input` group applies.
 
-Options: `--no-autostart` (don't start at login), `--no-system` (you already installed the system packages, or have no `sudo`), `--dev` (editable install for hacking on Vocal). Linux with `apt` and macOS with Homebrew are supported; other distros get a list of packages to install by hand.
+The script first lists exactly what it will do and asks for confirmation, then prints every command as it runs. Options: `--no-autostart` (don't start at login), `--no-system` (you already installed the system packages, or have no `sudo`), `--dev` (editable install for hacking on Vocal), `--yes` (skip the confirmation). Linux with `apt` and macOS with Homebrew are supported; other distros get a list of packages to install by hand.
 
 First run downloads the Whisper model (~500 MB for `small.en`) and, on the first `say`, the default Piper voice (~65 MB). Subsequent runs start in seconds.
 
