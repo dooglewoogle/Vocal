@@ -35,6 +35,23 @@ class FakeBackend(TTSBackend):
         return Synthesis(sample_rate=16000, chunks=iter([np.zeros(160, dtype=np.int16)]))
 
 
+class SlowBackend(FakeBackend):
+    """Every synthesis after the first blocks for ``delay`` (uninterruptible, like Kokoro)."""
+
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self.delay = delay
+        self.rendering = threading.Event()  # set while a slow render is in progress
+
+    def synthesize(self, text: str) -> Synthesis:
+        out = super().synthesize(text)
+        if len(self.texts) > 1:
+            self.rendering.set()
+            time.sleep(self.delay)
+            self.rendering.clear()
+        return out
+
+
 class FakePlayer:
     """Records plays; each play "takes" ``delay`` seconds unless aborted."""
 
@@ -214,6 +231,34 @@ def test_gap_between_sentences_but_not_before_first() -> None:
     assert player.times[0] - t0 < 0.15  # first sentence: no gap
     assert 0.28 <= player.times[1] - player.times[0] < 0.6  # A -> B
     assert 0.28 <= player.times[2] - player.times[1] < 0.6  # B -> C (across requests)
+
+
+def test_stop_does_not_wait_for_stale_render() -> None:
+    backend = SlowBackend(delay=1.0)
+    player = FakePlayer(delay=5.0)
+    events: list[str] = []
+    ctl = SpeechController(
+        SpeechConfig(), player=player, backend=backend,
+        on_speech_start=lambda: events.append("start"),
+        on_speech_end=lambda: events.append("end"),
+    )
+    ctl._backend_voice = ctl.voice
+    ctl.say("One. Two.")
+    _wait_for(lambda: ctl.is_speaking and backend.rendering.is_set())
+    t0 = time.monotonic()
+    ctl.stop()
+    assert time.monotonic() - t0 < 0.3  # did not wait for "Two." to finish rendering
+    assert not ctl.is_speaking and events == ["start", "end"]
+    assert ctl._idle.is_set()
+    # Stale render finishes in the background and is discarded; new work flows.
+    player.delay = 0.0
+    backend.delay = 0.0
+    ctl.say("Three.")
+    _wait_idle(ctl, timeout=3.0)
+    ctl.shutdown()
+    assert player.played == ["16000:1.0", "16000:1.0"]
+    assert backend.texts == ["One.", "Two.", "Three."]
+    assert events == ["start", "end", "start", "end"]
 
 
 def test_stop_during_gap_returns_promptly() -> None:

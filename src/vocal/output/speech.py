@@ -73,12 +73,15 @@ class SpeechController:
     A "run" is any stretch of back-to-back utterances, so callers get one
     start/end pair rather than one per sentence.
 
-    Bookkeeping: ``_work`` counts outstanding units — one per utterance not yet
-    fully synthesized plus one per pending not yet played or discarded. A
-    pending the play thread is inside ``play()`` with is still counted, so
-    :meth:`stop` cannot observe idle before playback has actually returned.
-    ``_epoch`` increments on every :meth:`stop`; both threads compare against it
-    instead of sharing a flag that one of them would have to clear.
+    Bookkeeping: ``_epoch`` increments on every :meth:`stop`; both threads
+    compare against it instead of sharing a flag one of them would have to
+    clear. ``_work`` counts outstanding units of the *current* epoch — one per
+    utterance not yet fully synthesized plus one per pending not yet played or
+    discarded. :meth:`stop` zeroes it, and a thread only retires a unit if its
+    epoch is still current, so a stale render still grinding on the synth
+    thread (Kokoro cannot be interrupted mid-sentence) does not delay idle or
+    the run's end. ``_playing`` covers the one thing that must finish first:
+    the play thread returning from an aborted ``play()``.
     """
 
     def __init__(
@@ -104,7 +107,8 @@ class SpeechController:
         self._voice_lock = threading.Lock()
         self._state_lock = threading.Lock()  # guards _epoch, _work, _speaking transitions, _idle
         self._epoch = 0
-        self._work = 0
+        self._work = 0  # fresh units outstanding; see class docstring
+        self._playing = False  # play thread is inside player.play()
         self._synth: threading.Thread | None = None
         self._play: threading.Thread | None = None
         self._shutdown = False
@@ -162,9 +166,11 @@ class SpeechController:
             # Same critical section as the play thread's freshness check +
             # player.reset(), so a stale sentence can never wipe this abort.
             self._epoch += 1
+            self._work = 0  # everything outstanding just became stale
             self._player.abort()
-        dropped = self._drain(self._queue) + self._drain(self._sentences)
-        self._finish_work(dropped)
+        self._drain(self._queue)
+        self._drain(self._sentences)
+        self._settle()
         if not self._on_worker_thread():
             self._idle.wait(timeout=5.0)
 
@@ -207,8 +213,8 @@ class SpeechController:
             self._queue.put(None)
             if me is not self._synth:
                 self._synth.join(timeout=5.0)
-            # No producer left: retire anything still queued, then the sentinel fits.
-            self._finish_work(self._drain(self._sentences))
+            # No producer left: clear anything still queued so the sentinel fits.
+            self._drain(self._sentences)
             self._sentences.put_nowait(None)
             if self._play is not None and me is not self._play:
                 self._play.join(timeout=5.0)
@@ -225,33 +231,41 @@ class SpeechController:
         return self._epoch != epoch
 
     @staticmethod
-    def _drain(q: queue.Queue) -> int:
-        """Discard queued items; returns how many real (non-sentinel) items went."""
-        dropped = sentinels = 0
+    def _drain(q: queue.Queue) -> None:
+        """Discard queued items (shutdown sentinels are kept)."""
+        sentinels = 0
         try:
             while True:
                 if q.get_nowait() is None:
                     sentinels += 1
-                else:
-                    dropped += 1
         except queue.Empty:
             pass
         for _ in range(sentinels):
             q.put_nowait(None)
-        return dropped
 
-    def _finish_work(self, n: int = 1) -> None:
-        """Retire ``n`` units of work. Whoever takes the count to zero ends the
-        run (callback outside the lock) and flags idle if still nothing new."""
-        if n == 0:
-            return
+    def _retire(self, epoch: int) -> None:
+        """Retire one unit counted under ``epoch``; a no-op if stop() has
+        since wiped that epoch. Then see whether we have gone quiet."""
         with self._state_lock:
-            self._work -= n
-            if self._work != 0:
-                return
-        self._end_run()
+            if not self._stale(epoch):
+                self._work -= 1
+        self._settle()
+
+    def _settle(self) -> None:
+        """If nothing fresh is outstanding and nothing is playing: end the run
+        (callback outside the lock) and flag idle if that is still true."""
         with self._state_lock:
-            if self._work == 0:
+            quiet = self._work == 0 and not self._playing
+            ending = quiet and self._speaking.is_set()
+            if ending:
+                self._speaking.clear()
+        if ending and self.on_speech_end:
+            try:
+                self.on_speech_end()
+            except Exception:
+                logger.exception("on_speech_end raised")
+        with self._state_lock:
+            if self._work == 0 and not self._playing:
                 self._idle.set()
 
     def _begin_run(self) -> None:
@@ -264,18 +278,6 @@ class SpeechController:
                 self.on_speech_start()
             except Exception:
                 logger.exception("on_speech_start raised")
-
-    def _end_run(self) -> None:
-        with self._state_lock:
-            # New work arrived since we hit zero: the run simply continues.
-            if self._work != 0 or not self._speaking.is_set():
-                return
-            self._speaking.clear()
-        if self.on_speech_end:
-            try:
-                self.on_speech_end()
-            except Exception:
-                logger.exception("on_speech_end raised")
 
     # ── Synth thread ─────────────────────────────────────────────────
 
@@ -291,7 +293,7 @@ class SpeechController:
             except Exception:
                 logger.exception("Speech synthesis failed")
             finally:
-                self._finish_work()
+                self._retire(epoch)
 
     def _ensure_backend(self, voice: str) -> TTSBackend | None:
         """Load backend/voice if not already loaded. Returns None on failure."""
@@ -329,9 +331,11 @@ class SpeechController:
             synthesis = backend.synthesize(sentence)
             pending = _Pending(epoch, synthesis.sample_rate, gain)
             with self._state_lock:
-                self._work += 1  # before it is visible to the play thread
+                if self._stale(epoch):
+                    return
+                self._work += 1  # counted before it is visible to the play thread
             if not self._offer(pending, epoch):
-                self._finish_work()  # never queued, so nobody else will retire it
+                self._retire(epoch)  # never queued, so nobody else will retire it
                 return
             try:
                 # Hand off first, then stream chunks in: the play thread starts on
@@ -376,12 +380,17 @@ class SpeechController:
                     fresh = fresh and not self._stale(pending.epoch)
                     if fresh:
                         self._player.reset()
+                        self._playing = True
                 if fresh:
-                    self._player.play(
-                        pending, pending.sample_rate, gain=pending.gain,
-                        on_first_audio=self._begin_run,
-                    )
+                    try:
+                        self._player.play(
+                            pending, pending.sample_rate, gain=pending.gain,
+                            on_first_audio=self._begin_run,
+                        )
+                    finally:
+                        with self._state_lock:
+                            self._playing = False
             except Exception:
                 logger.exception("Playback failed")
             finally:
-                self._finish_work()
+                self._retire(pending.epoch)
