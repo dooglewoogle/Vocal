@@ -7,6 +7,7 @@ import logging
 import queue
 import re
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 _SPLIT = re.compile(r"(?<=[.!?;:])\s+|\n+")
 _LOOKAHEAD = 2  # sentences fully handed to the play thread ahead of the one playing
+_SENTENCE_GAP_MS = 300  # breath between consecutive sentences of a run; none before the first
+_GAP_POLL_S = 0.02  # how often the gap wait re-checks for stop()
 
 
 def split_sentences(text: str) -> list[str]:
@@ -352,14 +355,25 @@ class SpeechController:
 
     # ── Play thread ──────────────────────────────────────────────────
 
+    def _gap(self, epoch: int) -> bool:
+        """Pause between sentences. Returns False if stop() arrived meanwhile."""
+        deadline = time.monotonic() + _SENTENCE_GAP_MS / 1000
+        while time.monotonic() < deadline:
+            if self._stale(epoch):
+                return False
+            time.sleep(_GAP_POLL_S)
+        return True
+
     def _play_loop(self) -> None:
         while True:
             pending = self._sentences.get()
             if pending is None:
                 break
             try:
+                # Mid-run (something already played, no stop since): breathe first.
+                fresh = not self._speaking.is_set() or self._gap(pending.epoch)
                 with self._state_lock:
-                    fresh = not self._stale(pending.epoch)
+                    fresh = fresh and not self._stale(pending.epoch)
                     if fresh:
                         self._player.reset()
                 if fresh:

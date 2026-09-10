@@ -41,6 +41,7 @@ class FakePlayer:
     def __init__(self, delay: float = 0.0) -> None:
         self.delay = delay
         self.played: list[str] = []
+        self.times: list[float] = []
         self.aborts = 0
         self._abort = threading.Event()
 
@@ -50,6 +51,7 @@ class FakePlayer:
         if on_first_audio:
             on_first_audio()
         self.played.append(f"{sample_rate}:{gain}")
+        self.times.append(time.monotonic())
         if self._abort.wait(self.delay):
             return False
         return True
@@ -199,6 +201,32 @@ def test_stop_during_lookahead_drops_prerendered_request() -> None:
     ctl.shutdown()
     assert player.played == ["16000:1.0", "16000:1.0"]
     assert events == ["start", "end", "start", "end"]
+
+
+def test_gap_between_sentences_but_not_before_first() -> None:
+    ctl, _, player, _ = _controller()
+    t0 = time.monotonic()
+    ctl.say("A. B.")
+    ctl.say("C.")
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert len(player.times) == 3
+    assert player.times[0] - t0 < 0.15  # first sentence: no gap
+    assert 0.28 <= player.times[1] - player.times[0] < 0.6  # A -> B
+    assert 0.28 <= player.times[2] - player.times[1] < 0.6  # B -> C (across requests)
+
+
+def test_stop_during_gap_returns_promptly() -> None:
+    ctl, _, player, events = _controller()
+    ctl.say("A. B. C.")
+    _wait_for(lambda: len(player.played) == 1)
+    t0 = time.monotonic()
+    ctl.stop()
+    assert time.monotonic() - t0 < 0.2
+    assert not ctl.is_speaking and events == ["start", "end"]
+    time.sleep(0.4)
+    ctl.shutdown()
+    assert len(player.played) == 1
 
 
 # ── interrupt / stop ──
