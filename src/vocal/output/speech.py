@@ -1,4 +1,4 @@
-"""Speech controller: FIFO of utterances, sentence-streamed synthesis, interrupt."""
+"""Speech controller: FIFO of utterances, pipelined synthesis + playback, interrupt."""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ import logging
 import queue
 import re
 import threading
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+
+import numpy as np
 
 from vocal.config import SpeechConfig, copy_into
 from vocal.notify import notify
@@ -19,6 +21,7 @@ from vocal.output.playback import AudioPlayer
 logger = logging.getLogger(__name__)
 
 _SPLIT = re.compile(r"(?<=[.!?;:])\s+|\n+")
+_LOOKAHEAD = 2  # sentences fully handed to the play thread ahead of the one playing
 
 
 def split_sentences(text: str) -> list[str]:
@@ -33,13 +36,46 @@ class Utterance:
     voice: str | None = None
 
 
+@dataclass
+class _Pending:
+    """One sentence's audio: filled by the synth thread, drained by the play thread.
+
+    ``epoch`` is the controller's stop counter at synthesis time; a pending whose
+    epoch is behind the current one was cancelled and must not be played.
+    """
+
+    epoch: int
+    sample_rate: int
+    gain: float
+    chunks: queue.Queue[np.ndarray | None] = field(default_factory=queue.Queue)
+
+    def __iter__(self) -> Iterator[np.ndarray]:
+        while (chunk := self.chunks.get()) is not None:
+            yield chunk
+
+    def close(self) -> None:
+        self.chunks.put(None)
+
+
 class SpeechController:
-    """Owns the TTS backend, a worker thread, and the playback queue.
+    """Owns the TTS backend, two worker threads, and the playback queue.
+
+    ``tts-synth`` pulls utterances, splits them into sentences and renders each
+    into a :class:`_Pending`; ``tts-play`` plays pendings in order. Up to
+    ``_LOOKAHEAD`` sentences sit between them, so the next sentence (and the next
+    queued request) renders while the current one is audible.
 
     ``on_speech_start`` fires when the first audio of a speaking run is
     about to play; ``on_speech_end`` when the queue drains or is stopped.
     A "run" is any stretch of back-to-back utterances, so callers get one
     start/end pair rather than one per sentence.
+
+    Bookkeeping: ``_work`` counts outstanding units — one per utterance not yet
+    fully synthesized plus one per pending not yet played or discarded. A
+    pending the play thread is inside ``play()`` with is still counted, so
+    :meth:`stop` cannot observe idle before playback has actually returned.
+    ``_epoch`` increments on every :meth:`stop`; both threads compare against it
+    instead of sharing a flag that one of them would have to clear.
     """
 
     def __init__(
@@ -58,14 +94,16 @@ class SpeechController:
         self.on_speech_end = on_speech_end
 
         self._queue: queue.Queue[Utterance | None] = queue.Queue()
-        self._abort = threading.Event()  # drop current utterance
+        self._sentences: queue.Queue[_Pending | None] = queue.Queue(maxsize=_LOOKAHEAD)
         self._speaking = threading.Event()
         self._idle = threading.Event()
         self._idle.set()
         self._voice_lock = threading.Lock()
-        self._state_lock = threading.Lock()  # guards _busy / _idle vs queue
-        self._busy = False  # worker is processing an utterance
-        self._thread: threading.Thread | None = None
+        self._state_lock = threading.Lock()  # guards _epoch, _work, _speaking transitions, _idle
+        self._epoch = 0
+        self._work = 0
+        self._synth: threading.Thread | None = None
+        self._play: threading.Thread | None = None
         self._shutdown = False
 
     # ── Public API ───────────────────────────────────────────────────
@@ -89,13 +127,17 @@ class SpeechController:
 
     @property
     def queue_length(self) -> int:
+        """Utterances not yet picked up for synthesis (sentences already
+        rendering ahead of playback are not counted)."""
         return self._queue.qsize()
 
     def start(self) -> None:
-        if self._thread is not None:
+        if self._synth is not None:
             return
-        self._thread = threading.Thread(target=self._worker, name="tts-worker", daemon=True)
-        self._thread.start()
+        self._synth = threading.Thread(target=self._synth_loop, name="tts-synth", daemon=True)
+        self._play = threading.Thread(target=self._play_loop, name="tts-play", daemon=True)
+        self._synth.start()
+        self._play.start()
 
     def say(self, text: str, interrupt: bool = False, voice: str | None = None) -> None:
         """Enqueue ``text``. ``interrupt`` flushes everything first."""
@@ -106,19 +148,21 @@ class SpeechController:
             self.stop()
         self.start()
         with self._state_lock:
+            self._work += 1
             self._idle.clear()
             self._queue.put(Utterance(text, voice))
 
     def stop(self) -> None:
-        """Flush the queue and halt playback. Blocks until the worker is idle
-        unless called from the worker itself."""
-        self._drain_queue()
-        self._abort.set()
-        self._player.abort()
+        """Flush the queue and halt playback. Blocks until idle unless called
+        from one of the worker threads (e.g. inside a callback)."""
         with self._state_lock:
-            if not self._busy and self._queue.empty():
-                self._idle.set()
-        if threading.current_thread() is not self._thread:
+            # Same critical section as the play thread's freshness check +
+            # player.reset(), so a stale sentence can never wipe this abort.
+            self._epoch += 1
+            self._player.abort()
+        dropped = self._drain(self._queue) + self._drain(self._sentences)
+        self._finish_work(dropped)
+        if not self._on_worker_thread():
             self._idle.wait(timeout=5.0)
 
     def wait(self, timeout: float | None = None) -> bool:
@@ -126,7 +170,7 @@ class SpeechController:
         return self._idle.wait(timeout)
 
     def set_voice(self, name: str) -> None:
-        """Switch voice (downloading if needed) on the worker thread."""
+        """Switch voice (downloading if needed) on the synth thread."""
         get_voice(name)  # validate now so callers get an immediate error
         new = copy.copy(self._config)
         new.voice = name
@@ -155,61 +199,96 @@ class SpeechController:
     def shutdown(self) -> None:
         self._shutdown = True
         self.stop()
-        if self._thread is not None:
+        me = threading.current_thread()
+        if self._synth is not None:
             self._queue.put(None)
-            self._thread.join(timeout=5.0)
-            self._thread = None
+            if me is not self._synth:
+                self._synth.join(timeout=5.0)
+            # No producer left: retire anything still queued, then the sentinel fits.
+            self._finish_work(self._drain(self._sentences))
+            self._sentences.put_nowait(None)
+            if self._play is not None and me is not self._play:
+                self._play.join(timeout=5.0)
+            self._synth = self._play = None
         if self._backend is not None:
             self._backend.unload()
 
-    # ── Worker ───────────────────────────────────────────────────────
+    # ── Shared bookkeeping ───────────────────────────────────────────
 
-    def _drain_queue(self) -> None:
+    def _on_worker_thread(self) -> bool:
+        return threading.current_thread() in (self._synth, self._play)
+
+    def _stale(self, epoch: int) -> bool:
+        return self._epoch != epoch
+
+    @staticmethod
+    def _drain(q: queue.Queue) -> int:
+        """Discard queued items; returns how many real (non-sentinel) items went."""
+        dropped = sentinels = 0
         try:
             while True:
-                self._queue.get_nowait()
+                if q.get_nowait() is None:
+                    sentinels += 1
+                else:
+                    dropped += 1
         except queue.Empty:
             pass
+        for _ in range(sentinels):
+            q.put_nowait(None)
+        return dropped
 
-    def _worker(self) -> None:
-        while not self._shutdown:
+    def _finish_work(self, n: int = 1) -> None:
+        """Retire ``n`` units of work. Whoever takes the count to zero ends the
+        run (callback outside the lock) and flags idle if still nothing new."""
+        if n == 0:
+            return
+        with self._state_lock:
+            self._work -= n
+            if self._work != 0:
+                return
+        self._end_run()
+        with self._state_lock:
+            if self._work == 0:
+                self._idle.set()
+
+    def _begin_run(self) -> None:
+        with self._state_lock:
+            if self._speaking.is_set():
+                return
+            self._speaking.set()
+        if self.on_speech_start:
+            try:
+                self.on_speech_start()
+            except Exception:
+                logger.exception("on_speech_start raised")
+
+    def _end_run(self) -> None:
+        with self._state_lock:
+            # New work arrived since we hit zero: the run simply continues.
+            if self._work != 0 or not self._speaking.is_set():
+                return
+            self._speaking.clear()
+        if self.on_speech_end:
+            try:
+                self.on_speech_end()
+            except Exception:
+                logger.exception("on_speech_end raised")
+
+    # ── Synth thread ─────────────────────────────────────────────────
+
+    def _synth_loop(self) -> None:
+        while True:
             item = self._queue.get()
             if item is None:
                 break
             with self._state_lock:
-                self._busy = True
-            self._abort.clear()
+                epoch = self._epoch
             try:
-                self._speak(item)
+                self._synthesize(item, epoch)
             except Exception:
-                logger.exception("Speech failed")
+                logger.exception("Speech synthesis failed")
             finally:
-                if self._queue.empty():
-                    self._end_run()
-                with self._state_lock:
-                    self._busy = False
-                    if self._queue.empty():
-                        self._idle.set()
-        self._end_run()
-        self._idle.set()
-
-    def _begin_run(self) -> None:
-        if not self._speaking.is_set():
-            self._speaking.set()
-            if self.on_speech_start:
-                try:
-                    self.on_speech_start()
-                except Exception:
-                    logger.exception("on_speech_start raised")
-
-    def _end_run(self) -> None:
-        if self._speaking.is_set():
-            self._speaking.clear()
-            if self.on_speech_end:
-                try:
-                    self.on_speech_end()
-                except Exception:
-                    logger.exception("on_speech_end raised")
+                self._finish_work()
 
     def _ensure_backend(self, voice: str) -> TTSBackend | None:
         """Load backend/voice if not already loaded. Returns None on failure."""
@@ -234,7 +313,7 @@ class SpeechController:
             notify("Vocal — speech unavailable", str(e), urgency="critical", icon="dialog-error")
             return None
 
-    def _speak(self, item: Utterance) -> None:
+    def _synthesize(self, item: Utterance, epoch: int) -> None:
         with self._voice_lock:
             voice = item.voice or self._config.voice
         backend = self._ensure_backend(voice)
@@ -242,12 +321,53 @@ class SpeechController:
             return
         gain = max(0, min(100, self._config.volume)) / 100.0
         for sentence in split_sentences(item.text):
-            if self._abort.is_set():
+            if self._stale(epoch):
                 return
             synthesis = backend.synthesize(sentence)
-            ok = self._player.play(
-                synthesis.chunks, synthesis.sample_rate, gain=gain,
-                on_first_audio=self._begin_run,
-            )
-            if not ok:
+            pending = _Pending(epoch, synthesis.sample_rate, gain)
+            with self._state_lock:
+                self._work += 1  # before it is visible to the play thread
+            if not self._offer(pending, epoch):
+                self._finish_work()  # never queued, so nobody else will retire it
                 return
+            try:
+                # Hand off first, then stream chunks in: the play thread starts on
+                # the first chunk while the rest of the sentence is still rendering.
+                for chunk in synthesis.chunks:
+                    if self._stale(epoch):
+                        return
+                    pending.chunks.put(chunk)
+            finally:
+                pending.close()  # always, or a play thread blocked on chunks.get() hangs
+
+    def _offer(self, pending: _Pending, epoch: int) -> bool:
+        """Put onto the bounded sentence queue; give up if cancelled meanwhile."""
+        while True:
+            try:
+                self._sentences.put(pending, timeout=0.05)
+                return True
+            except queue.Full:
+                if self._stale(epoch) or self._shutdown:
+                    return False
+
+    # ── Play thread ──────────────────────────────────────────────────
+
+    def _play_loop(self) -> None:
+        while True:
+            pending = self._sentences.get()
+            if pending is None:
+                break
+            try:
+                with self._state_lock:
+                    fresh = not self._stale(pending.epoch)
+                    if fresh:
+                        self._player.reset()
+                if fresh:
+                    self._player.play(
+                        pending, pending.sample_rate, gain=pending.gain,
+                        on_first_audio=self._begin_run,
+                    )
+            except Exception:
+                logger.exception("Playback failed")
+            finally:
+                self._finish_work()

@@ -46,7 +46,6 @@ class FakePlayer:
 
     def play(self, chunks: Iterable[np.ndarray], sample_rate: int, gain: float = 1.0,
              on_first_audio=None) -> bool:
-        self._abort.clear()
         list(chunks)
         if on_first_audio:
             on_first_audio()
@@ -54,6 +53,9 @@ class FakePlayer:
         if self._abort.wait(self.delay):
             return False
         return True
+
+    def reset(self) -> None:
+        self._abort.clear()
 
     def abort(self) -> None:
         self.aborts += 1
@@ -142,6 +144,63 @@ def test_gain_from_volume() -> None:
     assert player.played == ["16000:0.5"]
 
 
+def _wait_for(pred, timeout: float = 2.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return
+        time.sleep(0.005)
+    raise AssertionError("condition not met in time")
+
+
+def test_next_sentences_render_while_first_plays() -> None:
+    player = FakePlayer(delay=0.5)
+    ctl, backend, player, events = _controller(player)
+    ctl.say("A. B. C.")
+    _wait_for(lambda: ctl.is_speaking)
+    # Lookahead: B and C are synthesized while A is still "playing".
+    _wait_for(lambda: len(backend.texts) == 3, timeout=0.2)
+    assert player.played == ["16000:1.0"]
+    player.delay = 0.0
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert len(player.played) == 3
+    assert events == ["start", "end"]
+
+
+def test_stop_while_synth_blocked_on_full_lookahead() -> None:
+    player = FakePlayer(delay=5.0)
+    ctl, backend, player, events = _controller(player)
+    ctl.say("One. Two. Three. Four. Five. Six.")
+    # one playing + _LOOKAHEAD queued + one blocked in put() => 4 synthesized
+    _wait_for(lambda: len(backend.texts) == 4)
+    t0 = time.time()
+    ctl.stop()
+    assert time.time() - t0 < 1.0
+    assert ctl._idle.is_set() and not ctl.is_speaking
+    assert events == ["start", "end"]
+    time.sleep(0.1)
+    ctl.shutdown()
+    assert player.played == ["16000:1.0"]
+    assert len(backend.texts) == 4  # synth bailed, did not render the rest
+
+
+def test_stop_during_lookahead_drops_prerendered_request() -> None:
+    player = FakePlayer(delay=5.0)
+    ctl, backend, player, events = _controller(player)
+    ctl.say("One.")
+    ctl.say("Two.")
+    _wait_for(lambda: "Two." in backend.texts)
+    ctl.stop()
+    assert player.played == ["16000:1.0"]
+    player.delay = 0.0
+    ctl.say("Three.")
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert player.played == ["16000:1.0", "16000:1.0"]
+    assert events == ["start", "end", "start", "end"]
+
+
 # ── interrupt / stop ──
 
 
@@ -161,7 +220,7 @@ def test_stop_flushes_queue_and_aborts_playback() -> None:
     assert not ctl.is_speaking
     assert events == ["start", "end"]
     ctl.shutdown()
-    assert backend.texts == ["Long one."]  # "Queued." never synthesized
+    assert player.played == ["16000:1.0"]  # "Queued." may pre-render, never plays
 
 
 def test_interrupt_replaces_current_speech() -> None:

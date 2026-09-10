@@ -44,7 +44,10 @@ class AudioPlayer:
     opened at the chunks' native rate — no resampling needed.
 
     Thread-safe: :meth:`abort` may be called from any thread while
-    :meth:`play` is blocking on another.
+    :meth:`play` is blocking on another. An abort is sticky: the caller
+    must :meth:`reset` before the next :meth:`play`, in the same critical
+    section it uses to decide that the audio is still wanted, so an abort
+    that raced with the hand-off is never wiped.
     """
 
     def __init__(self, device: str | None = None) -> None:
@@ -63,8 +66,8 @@ class AudioPlayer:
         gain: float = 1.0,
         on_first_audio: Callable[[], None] | None = None,
     ) -> bool:
-        """Block until all chunks have played. Returns False if aborted."""
-        self._abort.clear()
+        """Block until all chunks have played. Returns False if aborted
+        (including an abort issued before this call and not yet reset)."""
         frame = max(1, sample_rate * _FRAME_MS // 1000)
         stream = sd.OutputStream(
             samplerate=sample_rate, channels=1, dtype="int16",
@@ -108,6 +111,10 @@ class AudioPlayer:
                 stream.close()
             except Exception:  # pragma: no cover - best effort
                 pass
+
+    def reset(self) -> None:
+        """Clear a previous abort so the next :meth:`play` runs."""
+        self._abort.clear()
 
     def abort(self) -> None:
         """Stop immediately, discarding buffered audio."""

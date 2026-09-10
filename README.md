@@ -190,7 +190,7 @@ vocal stop                           # halt and clear the queue
 vocal status                         # {"speaking": ..., "queue": ..., "voice": ..., "backend": ...}
 ```
 
-Text is split at sentence boundaries and synthesized sentence-by-sentence, so long passages start playing after the first sentence. Requests queue FIFO unless `--interrupt` is given.
+Text is split at sentence boundaries; the next sentence, and any queued request, is synthesized while the current one plays, so long passages start after the first sentence and there is no synthesis gap between sentences. Requests queue FIFO unless `--interrupt` is given.
 
 ### HTTP hook (for other processes)
 
