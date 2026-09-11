@@ -16,7 +16,7 @@ No cloud, no GPU, no latency surprises. A settings window is the main control su
 ## Platform
 
 - **OS**: Linux (X11 and Wayland), macOS (experimental), Windows (untested)
-- **Python**: 3.10+
+- **Python**: 3.10 – 3.13 (kokoro-onnx has no 3.14 build yet)
 - **CPU**: Any x86_64 — runs int8 quantised by default
 - **Audio**: Any ALSA/PulseAudio/PipeWire device
 - **Desktop**: Tk for the settings window (`python3-tk`), system tray optional (see [Tray support](#tray-support))
@@ -31,7 +31,7 @@ cd Vocal
 
 That is the whole install. The script installs the system packages (asks for `sudo` once), adds you to the `input` group for the global hotkey, creates a virtual environment under `~/.local/share/vocal`, installs Vocal with both speech engines and the hotkey backend, links `vocal` into `~/.local/bin`, adds an app-menu entry and starts Vocal at login. Log out and back in once afterwards so the `input` group applies.
 
-The script first lists exactly what it will do and asks for confirmation, then prints every command as it runs. Options: `--no-autostart` (don't start at login), `--no-system` (you already installed the system packages, or have no `sudo`), `--dev` (editable install for hacking on Vocal), `--yes` (skip the confirmation). Linux with `apt` and macOS with Homebrew are supported; other distros get a list of packages to install by hand.
+The script first lists exactly what it will do and asks for confirmation, then prints every command as it runs. Options: `--no-autostart` (don't start at login), `--no-system` (you already installed the system packages, or have no `sudo`), `--dev` (editable install for hacking on Vocal), `--yes` (skip the confirmation). Linux with `apt` and macOS with Homebrew are supported; other distros get a list of packages to install by hand. If the default `python3` is too new (3.14 on current macOS), the script picks an installed 3.10–3.13 interpreter, or on a Mac installs Homebrew's `python@3.13` alongside PortAudio.
 
 First run downloads the Whisper model (~500 MB for `small.en`) and, on the first `say`, the default Piper voice (~65 MB). Subsequent runs start in seconds.
 
@@ -44,7 +44,7 @@ sudo apt install python3-venv python3-dev python3-tk python3-gi gir1.2-ayatanaap
     portaudio19-dev libnotify-bin espeak-ng xdotool xclip wtype wl-clipboard
 sudo usermod -aG input $USER           # global hotkey reads /dev/input; re-login afterwards
 
-python3 -m venv --system-site-packages .venv   # system-site-packages lets the tray see python3-gi
+python3 -m venv --system-site-packages .venv   # needs Python 3.10–3.13; system-site-packages lets the tray see python3-gi
 .venv/bin/pip install '.[hotkey]'              # drop [hotkey] to skip the compiled evdev backend
 .venv/bin/vocal install-desktop --autostart    # app-menu entry + start at login (optional)
 ```

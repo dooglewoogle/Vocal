@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "vocal"
 version = "0.4.0"
 description = "Local CPU-only dictation and text-to-speech daemon (faster-whisper + Piper/Kokoro)"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"  # kokoro-onnx has no 3.14 release yet
 license = "GPL-3.0-or-later"
 dependencies = [
     "faster-whisper>=1.1.0",

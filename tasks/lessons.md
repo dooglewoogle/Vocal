@@ -31,3 +31,9 @@ Patterns from user corrections. Read at session start.
 **Mistake:** asserted "pynput is the fallback when evdev is missing on Linux" from reading our own code, without checking pynput's own dependencies. pynput requires evdev on Linux, so the fallback did not exist for a pip install.
 **Rule:** before claiming an install-time fallback, do the install in a fresh venv and read `pip show <dep>` for the transitive requirements. Our code's fallback path is irrelevant if the package manager pulls the heavy dependency anyway.
 **Trigger:** any statement of the form "X is optional because we fall back to Y" about a third-party package.
+
+## 2026-09-11 — first macOS install (Python 3.14)
+
+**Mistake:** declared `requires-python = ">=3.10"` with no ceiling while depending on kokoro-onnx, which caps at `<3.14`. The installer built a 3.14 venv and pip failed after the venv existed, leaving a broken install behind.
+**Rule:** when adding a dependency, read its `requires_python` on PyPI (`curl -s https://pypi.org/pypi/<pkg>/json | jq .info.requires_python`) and mirror the tightest ceiling in pyproject. The installer probes interpreter versions before creating a venv and never builds one on an unsupported Python.
+**Trigger:** any edit to the `dependencies` list, or a new default platform whose system Python may be newer than ours.
