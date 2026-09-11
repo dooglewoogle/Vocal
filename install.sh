@@ -8,14 +8,19 @@
 #   ./install.sh --yes           don't ask for confirmation
 #
 # Environment overrides: VOCAL_HOME (default ~/.local/share/vocal), VOCAL_BIN (default ~/.local/bin),
-# PYTHON (interpreter to use; default: the system python3 whose PyGObject the tray needs).
+# PYTHON (interpreter to use, 3.10-3.13; default: first supported of python3, python3.13 ... python3.10).
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VOCAL_HOME="${VOCAL_HOME:-$HOME/.local/share/vocal}"
 VOCAL_BIN="${VOCAL_BIN:-$HOME/.local/bin}"
 VENV="$VOCAL_HOME/venv"
-PYTHON="${PYTHON:-python3}"
+PYTHON_OVERRIDE="${PYTHON:-}"
+PYTHON=""
+# Python minors Vocal can run on, newest first. Must match requires-python in pyproject.toml
+# (tests/test_install_sh.py enforces this). The ceiling comes from kokoro-onnx, which has no 3.14 release.
+SUPPORTED_PYTHONS="3.13 3.12 3.11 3.10"
+NEED_PYTHON=""   # set to a minor when step 1 must brew-install python@X.Y first
 DO_SYSTEM=1
 DO_AUTOSTART=1
 DEV=0
@@ -36,6 +41,15 @@ step() { printf '\n%s %s\n' "$(bold "[$1/$TOTAL]")" "$(bold "$2")"; }
 run()  { printf '    $ %s\n' "$*"; "$@"; }
 note() { printf '    %s\n' "$*"; }
 skip() { printf '\n%s %s — skipped (%s)\n' "$(bold "[$1/$TOTAL]")" "$2" "$3"; }
+# Interpreter probes use only `--version` so a broken shim (macOS without CLT) is skipped, not fatal.
+py_version() { "$1" --version 2>/dev/null | sed -nE 's/^Python ([0-9][0-9.]*).*/\1/p' || true; }
+py_minor()   { py_version "$1" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/'; }
+py_supported() {
+    local m; m="$(py_minor "$1")"
+    [ -n "$m" ] || return 1
+    case " $SUPPORTED_PYTHONS " in *" $m "*) return 0 ;; esac
+    return 1
+}
 
 OS="$(uname -s)"
 case "$OS" in
@@ -48,9 +62,72 @@ if [ "$OS" = Linux ] && [ "$DO_SYSTEM" = 1 ] && ! command -v apt-get >/dev/null;
     echo "  portaudio, libnotify, espeak-ng, xdotool, xclip, wtype, wl-clipboard" >&2
     exit 1
 fi
-if ! command -v "$PYTHON" >/dev/null; then
-    echo "Python interpreter not found: $PYTHON (set PYTHON=/path/to/python3)" >&2
-    exit 1
+
+# ── Interpreter ────────────────────────────────────────────────────────
+PY_NEWEST="${SUPPORTED_PYTHONS%% *}"
+PY_RANGE="${SUPPORTED_PYTHONS##* }–$PY_NEWEST"
+PY_WHY="kokoro-onnx has no 3.14 build yet"
+BREW_PREFIX=""
+if [ "$OS" = Darwin ] && command -v brew >/dev/null; then
+    BREW_PREFIX="$(brew --prefix)"
+fi
+SYS_PY="$(py_version python3)"; SYS_PY="${SYS_PY:-not found}"
+if [ -n "$PYTHON_OVERRIDE" ]; then
+    if ! command -v "$PYTHON_OVERRIDE" >/dev/null; then
+        echo "Python interpreter not found: $PYTHON_OVERRIDE (from PYTHON=...)" >&2
+        exit 1
+    fi
+    if ! py_supported "$PYTHON_OVERRIDE"; then
+        echo "PYTHON=$PYTHON_OVERRIDE is Python $(py_version "$PYTHON_OVERRIDE"); Vocal needs $PY_RANGE ($PY_WHY)." >&2
+        exit 1
+    fi
+    PYTHON="$PYTHON_OVERRIDE"
+else
+    CANDIDATES="python3"
+    for v in $SUPPORTED_PYTHONS; do
+        CANDIDATES="$CANDIDATES python$v"
+        if [ -n "$BREW_PREFIX" ]; then
+            CANDIDATES="$CANDIDATES $BREW_PREFIX/opt/python@$v/bin/python$v"
+        fi
+    done
+    PROBED=""
+    for c in $CANDIDATES; do
+        command -v "$c" >/dev/null 2>&1 || continue
+        if py_supported "$c"; then
+            PYTHON="$c"
+            break
+        fi
+        ver="$(py_version "$c")"
+        PROBED="$PROBED  $c = ${ver:-not a working Python}"$'\n'
+    done
+    if [ -z "$PYTHON" ]; then
+        if [ "$OS" = Darwin ] && [ -n "$BREW_PREFIX" ] && [ "$DO_SYSTEM" = 1 ]; then
+            NEED_PYTHON="$PY_NEWEST"
+            PYTHON="$BREW_PREFIX/opt/python@$NEED_PYTHON/bin/python$NEED_PYTHON"
+        else
+            {
+                echo "Vocal needs Python $PY_RANGE ($PY_WHY)."
+                echo "Found:"
+                printf '%s' "${PROBED:-  no python3 on PATH}"
+                echo "Install one and re-run, or point PYTHON at one:"
+                echo "  Debian/Ubuntu: sudo apt-get install python$PY_NEWEST python$PY_NEWEST-venv    (or the deadsnakes PPA)"
+                echo "  macOS:         brew install python@$PY_NEWEST"
+                echo "  then:          PYTHON=python$PY_NEWEST ./install.sh"
+            } >&2
+            exit 1
+        fi
+    fi
+fi
+if [ -n "$NEED_PYTHON" ]; then
+    PY_DESC="python$NEED_PYTHON (installed in step 1)"
+else
+    PY_DESC="$PYTHON (Python $(py_version "$PYTHON"))"
+fi
+# An existing venv on an unsupported interpreter (e.g. left by a failed run) is replaced, not reused.
+VENV_STALE=""
+if [ -x "$VENV/bin/python" ] && ! py_supported "$VENV/bin/python"; then
+    VENV_STALE="$(py_version "$VENV/bin/python")"
+    : "${VENV_STALE:=unknown}"
 fi
 
 APT_PKGS="python3-venv python3-dev python3-tk python3-gi gir1.2-ayatanaappindicator3-0.1 portaudio19-dev libnotify-bin espeak-ng xdotool xclip wtype wl-clipboard"
@@ -80,15 +157,24 @@ if [ "$DO_SYSTEM" = 1 ]; then
             echo "  2. Input group: nothing to do, $USER is already in 'input'."
         fi
     else
-        echo "  1. Install PortAudio with Homebrew (brew install portaudio)."
+        if [ -n "$NEED_PYTHON" ]; then
+            echo "  1. Install PortAudio and Python $NEED_PYTHON with Homebrew (brew install portaudio python@$NEED_PYTHON)."
+            echo "       python3 here is $SYS_PY; Vocal needs $PY_RANGE because $PY_WHY."
+        else
+            echo "  1. Install PortAudio with Homebrew (brew install portaudio)."
+        fi
         echo "  2. Input group: not needed on macOS."
     fi
 else
     echo "  1. System packages: skipped (--no-system)."
     echo "  2. Input group: skipped (--no-system)."
 fi
-echo "  3. Create a Python virtual environment at $VENV"
-echo "       using $PYTHON ($("$PYTHON" --version 2>&1)), with access to system site-packages."
+if [ -n "$VENV_STALE" ]; then
+    echo "  3. Replace the virtual environment at $VENV (it uses Python $VENV_STALE, unsupported)"
+else
+    echo "  3. Create a Python virtual environment at $VENV"
+fi
+echo "       using $PY_DESC, with access to system site-packages."
 echo "  4. pip $PIP_MODE Vocal${EXTRA} from $SRC_DIR into that venv."
 echo "  5. Link $VOCAL_BIN/vocal -> $VENV/bin/vocal so 'vocal' is on your PATH."
 if [ "$OS" = Linux ]; then
@@ -122,7 +208,11 @@ if [ "$DO_SYSTEM" = 1 ]; then
         # shellcheck disable=SC2086
         run sudo apt-get install -y $APT_PKGS
     else
-        step 1 "Installing PortAudio"
+        if [ -n "$NEED_PYTHON" ]; then
+            step 1 "Installing PortAudio and Python $NEED_PYTHON"
+        else
+            step 1 "Installing PortAudio"
+        fi
         if ! command -v brew >/dev/null; then
             echo "    Homebrew not found. Install portaudio manually, then re-run with --no-system." >&2
             exit 1
@@ -131,6 +221,17 @@ if [ "$DO_SYSTEM" = 1 ]; then
             note "portaudio is already installed"
         else
             run brew install portaudio
+        fi
+        if [ -n "$NEED_PYTHON" ]; then
+            if brew list "python@$NEED_PYTHON" >/dev/null 2>&1; then
+                note "python@$NEED_PYTHON is already installed"
+            else
+                run brew install "python@$NEED_PYTHON"
+            fi
+            if [ ! -x "$PYTHON" ]; then
+                echo "    Expected $PYTHON after installing python@$NEED_PYTHON, but it is not there." >&2
+                exit 1
+            fi
         fi
     fi
 else
@@ -156,6 +257,10 @@ fi
 # ── 3. Virtual environment ─────────────────────────────────────────────
 step 3 "Creating virtual environment"
 run mkdir -p "$VOCAL_HOME"
+if [ -n "$VENV_STALE" ]; then
+    note "$VENV uses Python $VENV_STALE (unsupported); replacing it"
+    run rm -rf "$VENV"
+fi
 if [ -x "$VENV/bin/python" ]; then
     note "$VENV already exists; reusing it"
 else
