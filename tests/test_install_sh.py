@@ -151,3 +151,41 @@ def test_macos_without_brew_fails_early(sb: Sandbox):
     r = sb.run()
     assert r.returncode == 1
     assert "brew install python@3.13" in r.stderr
+
+
+def test_help_lists_agent_flags(sb: Sandbox):
+    r = sb.run("--help")
+    assert r.returncode == 0
+    assert "--agents" in r.stdout and "--no-agents" in r.stdout
+    assert "Environment overrides" in r.stdout  # the sed range still covers the whole header
+
+
+def test_agents_step_offered_when_agent_dir_exists(sb: Sandbox, tmp_path: Path):
+    sb.python("python3", "3.12.4")
+    (tmp_path / ".codex").mkdir()
+    r = sb.run()
+    assert "7. Make your AI coding agents speak: codex." in r.stdout
+    assert "~/.codex/hooks.json, ~/.codex/AGENTS.md" in r.stdout
+    assert "Asked separately below" in r.stdout
+
+
+def test_agents_step_skipped_when_none_detected(sb: Sandbox):
+    sb.python("python3", "3.12.4")
+    r = sb.run()
+    assert "7. AI coding agents: none detected" in r.stdout
+
+
+def test_no_agents_flag_skips_even_when_detected(sb: Sandbox, tmp_path: Path):
+    sb.python("python3", "3.12.4")
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".gemini").mkdir()
+    r = sb.run("--no-agents")
+    assert "7. AI coding agents: skipped (--no-agents). Detected: claude, gemini." in r.stdout
+
+
+def test_agents_flag_does_not_ask_separately(sb: Sandbox, tmp_path: Path):
+    sb.python("python3", "3.12.4")
+    (tmp_path / ".claude").mkdir()
+    r = sb.run("--agents")
+    assert "7. Make your AI coding agents speak: claude." in r.stdout
+    assert "Asked separately below" not in r.stdout

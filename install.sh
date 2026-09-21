@@ -5,7 +5,9 @@
 #   ./install.sh --no-system     skip apt/brew and the input group (already done, or no sudo)
 #   ./install.sh --no-autostart  don't start Vocal at login
 #   ./install.sh --dev           editable install (developers)
-#   ./install.sh --yes           don't ask for confirmation
+#   ./install.sh --yes           don't ask for confirmation (does not imply --agents)
+#   ./install.sh --agents        also hook Vocal into detected AI coding agents without asking
+#   ./install.sh --no-agents     never touch AI coding agent configs
 #
 # Environment overrides: VOCAL_HOME (default ~/.local/share/vocal), VOCAL_BIN (default ~/.local/bin),
 # PYTHON (interpreter to use, 3.10-3.13; default: first supported of python3, python3.13 ... python3.10).
@@ -25,13 +27,16 @@ DO_SYSTEM=1
 DO_AUTOSTART=1
 DEV=0
 ASSUME_YES=0
+DO_AGENTS=""     # "" = ask, 1 = --agents, 0 = --no-agents
 for arg in "$@"; do
     case "$arg" in
         --no-system) DO_SYSTEM=0 ;;
         --no-autostart) DO_AUTOSTART=0 ;;
         --dev) DEV=1 ;;
         --yes|-y) ASSUME_YES=1 ;;
-        -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+        --agents) DO_AGENTS=1 ;;
+        --no-agents) DO_AGENTS=0 ;;
+        -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; exit 2 ;;
     esac
 done
@@ -139,7 +144,18 @@ NEED_GROUP=0
 if [ "$OS" = Linux ] && ! id -nG "$USER" | grep -qw input; then
     NEED_GROUP=1
 fi
-TOTAL=6
+# AI coding agents: detected by their global config dir or command. Must match vocal.agents.AGENTS.
+AGENTS_FOUND=""
+AGENT_FILES=""
+for spec in "claude:.claude:settings.json:CLAUDE.md" "codex:.codex:hooks.json:AGENTS.md" "gemini:.gemini:settings.json:GEMINI.md"; do
+    IFS=: read -r a_name a_dir a_hooks a_md <<<"$spec"
+    if [ -d "$HOME/$a_dir" ] || command -v "$a_name" >/dev/null 2>&1; then
+        AGENTS_FOUND="${AGENTS_FOUND:+$AGENTS_FOUND, }$a_name"
+        AGENT_FILES="${AGENT_FILES:+$AGENT_FILES, }~/$a_dir/$a_hooks, ~/$a_dir/$a_md"
+    fi
+done
+[ -z "$AGENTS_FOUND" ] && DO_AGENTS=0
+TOTAL=7
 
 # ── The plan ───────────────────────────────────────────────────────────
 echo
@@ -187,9 +203,21 @@ if [ "$OS" = Linux ]; then
 else
     echo "  6. Desktop entry: not applicable on macOS."
 fi
+if [ -z "$AGENTS_FOUND" ]; then
+    echo "  7. AI coding agents: none detected (Claude Code, Codex CLI, Gemini CLI); skipped."
+elif [ "$DO_AGENTS" = 0 ]; then
+    echo "  7. AI coding agents: skipped (--no-agents). Detected: $AGENTS_FOUND."
+else
+    echo "  7. Make your AI coding agents speak: $AGENTS_FOUND."
+    echo "       Adds a hook that reads <say>...</say> aloud, and an instruction block telling the"
+    echo "       agent to use it (writes $AGENT_FILES)."
+    if [ "$DO_AGENTS" != 1 ]; then
+        echo "       Asked separately below; 'vocal install-agents --uninstall' reverses it."
+    fi
+fi
 echo
 echo "Nothing outside $VOCAL_HOME, $VOCAL_BIN and the desktop-entry files above is written,"
-echo "except the system packages in step 1."
+echo "except the system packages in step 1 and, only if you opt in, the agent files in step 7."
 echo
 if [ "$ASSUME_YES" != 1 ]; then
     read -r -p "Proceed? [Y/n] " answer
@@ -197,6 +225,18 @@ if [ "$ASSUME_YES" != 1 ]; then
         [Yy]|[Yy][Ee][Ss]) ;;
         *) echo "Aborted. Nothing was changed."; exit 0 ;;
     esac
+fi
+# Explicit opt-in: default No, and --yes alone never enables it.
+if [ -z "$DO_AGENTS" ]; then
+    if [ "$ASSUME_YES" = 1 ]; then
+        DO_AGENTS=0
+    else
+        read -r -p "Also hook Vocal into $AGENTS_FOUND (step 7)? [y/N] " answer
+        case "${answer:-N}" in
+            [Yy]|[Yy][Ee][Ss]) DO_AGENTS=1 ;;
+            *) DO_AGENTS=0 ;;
+        esac
+    fi
 fi
 
 NEED_RELOGIN=0
@@ -309,6 +349,16 @@ else
     skip 6 "Desktop entry" "not applicable on macOS"
 fi
 
+# ── 7. AI coding agents ────────────────────────────────────────────────
+if [ "$DO_AGENTS" = 1 ]; then
+    step 7 "Hooking Vocal into $AGENTS_FOUND"
+    run "$VENV/bin/vocal" install-agents
+elif [ -z "$AGENTS_FOUND" ]; then
+    skip 7 "AI coding agents" "none detected"
+else
+    skip 7 "AI coding agents" "not requested; run 'vocal install-agents' later"
+fi
+
 # ── Done ───────────────────────────────────────────────────────────────
 echo
 bold "Vocal is installed."; echo
@@ -316,6 +366,9 @@ note "Run it:   $VOCAL_BIN/vocal        (or 'vocal' once PATH is updated)"
 note "First run downloads the Whisper model (~500 MB) and the default voice (~65 MB)."
 if [ "$NEED_RELOGIN" = 1 ]; then
     note "Log out and back in once so the 'input' group applies (needed for the global hotkey)."
+fi
+if [ "$DO_AGENTS" = 1 ]; then
+    note "Your AI coding agents speak once the Vocal daemon runs; start a new agent session to pick up the hook."
 fi
 if [ "$OS" = Darwin ]; then
     note "macOS: grant Accessibility permission to your terminal for the global hotkey"
