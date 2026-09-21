@@ -31,9 +31,25 @@ cd Vocal
 
 That is the whole install. The script installs the system packages (asks for `sudo` once), adds you to the `input` group for the global hotkey, creates a virtual environment under `~/.local/share/vocal`, installs Vocal with both speech engines and the hotkey backend, links `vocal` into `~/.local/bin`, adds an app-menu entry and starts Vocal at login. Log out and back in once afterwards so the `input` group applies.
 
-The script first lists exactly what it will do and asks for confirmation, then prints every command as it runs. Options: `--no-autostart` (don't start at login), `--no-system` (you already installed the system packages, or have no `sudo`), `--dev` (editable install for hacking on Vocal), `--yes` (skip the confirmation). Linux with `apt` and macOS with Homebrew are supported; other distros get a list of packages to install by hand. If the default `python3` is too new (3.14 on current macOS), the script picks an installed 3.10–3.13 interpreter, or on a Mac installs Homebrew's `python@3.13` alongside PortAudio.
+The script first lists exactly what it will do and asks for confirmation, then prints every command as it runs. Options: `--no-autostart` (don't start at login), `--no-system` (you already installed the system packages, or have no `sudo`), `--dev` (editable install for hacking on Vocal), `--yes` (skip the confirmation), `--agents` / `--no-agents` (see below). Linux with `apt` and macOS with Homebrew are supported; other distros get a list of packages to install by hand. If the default `python3` is too new (3.14 on current macOS), the script picks an installed 3.10–3.13 interpreter, or on a Mac installs Homebrew's `python@3.13` alongside PortAudio.
 
 First run downloads the Whisper model (~500 MB for `small.en`) and, on the first `say`, the default Piper voice (~65 MB). Subsequent runs start in seconds.
+
+### AI coding agents
+
+If Claude Code, OpenAI Codex CLI or Gemini CLI is installed (their `~/.claude`, `~/.codex`, `~/.gemini` directory or command exists), the installer offers a seventh, opt-in step that makes them talk. It is off unless you answer **y** to its own prompt or pass `--agents`; `--yes` alone never enables it. For each detected agent it:
+
+- registers `python -m vocal.hooks.say_hook` (this venv's interpreter, by absolute path) as a hook on the event that carries the assistant's text: Claude Code `MessageDisplay` in `~/.claude/settings.json`, Codex `Stop` in `~/.codex/hooks.json`, Gemini `AfterAgent` in `~/.gemini/settings.json`. Existing hooks and settings are kept; the entry is merged in.
+- appends a marked block (`<!-- vocal:begin -->` … `<!-- vocal:end -->`) to the agent's global instructions file (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`) telling the model to wrap a one-sentence spoken summary in `<say>…</say>` at the start and end of each reply.
+
+The hook posts every completed `<say>` span to the running daemon's `/say` route from a detached process, so the agent never waits on it; spans inside code blocks are ignored, and nothing happens when the daemon is not running. Start a new agent session after installing.
+
+```bash
+vocal install-agents               # all detected agents
+vocal install-agents claude codex  # just these
+vocal install-agents --list        # detected / installed state and the files involved
+vocal install-agents --uninstall   # remove the hook entries and the instruction block
+```
 
 <details>
 <summary>Manual install (what the script does)</summary>
@@ -238,6 +254,7 @@ vocal stop
 vocal status
 vocal models [list | download NAME | remove NAME]
 vocal install-desktop [--autostart | --no-autostart | --uninstall]
+vocal install-agents [claude|codex|gemini …] [--uninstall | --list]
 
 General:
   --headless                Tray icon only, no settings window
