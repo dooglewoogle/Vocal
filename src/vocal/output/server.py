@@ -18,42 +18,17 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from vocal.output.runtime import read_runtime_info, runtime_file_path  # noqa: F401 - public here
 from vocal.output.speech import SpeechController
 
 logger = logging.getLogger(__name__)
 
 _MAX_BODY = 1 << 20  # 1 MiB
-
-
-def runtime_file_path() -> Path:
-    env = os.environ.get("VOCAL_RUNTIME_FILE")
-    if env:
-        return Path(env)
-    if sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support" / "vocal"
-    elif sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "vocal"
-    else:
-        rt = os.environ.get("XDG_RUNTIME_DIR")
-        base = Path(rt) / "vocal" if rt else Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "vocal"
-    return base / "server.json"
-
-
-def read_runtime_info(path: Path | None = None) -> dict | None:
-    p = path or runtime_file_path()
-    try:
-        data = json.loads(p.read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or "port" not in data:
-        return None
-    return data
 
 
 class _Handler(BaseHTTPRequestHandler):

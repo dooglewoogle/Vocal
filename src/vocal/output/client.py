@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from vocal.output.server import read_runtime_info
+from vocal.output.runtime import read_runtime_info
 
 logger = logging.getLogger(__name__)
 
