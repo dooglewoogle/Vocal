@@ -6,6 +6,7 @@
     vocal status                  daemon speech status
     vocal models list|download|remove
     vocal install-desktop [--autostart | --no-autostart | --uninstall]
+    vocal install-agents [claude|codex|gemini ...] [--uninstall | --list]
 """
 
 from __future__ import annotations
@@ -162,6 +163,13 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--no-autostart", dest="autostart", action="store_false",
                       help="Remove the start-at-login entry, keep the app-menu entry")
     desk.add_argument("--uninstall", action="store_true", help="Remove the menu entry, icon and autostart entry")
+
+    ag = sub.add_parser("install-agents",
+                        help="Make AI coding agents (Claude Code, Codex CLI, Gemini CLI) speak their <say> tags")
+    ag.add_argument("names", nargs="*", metavar="AGENT", help="claude, codex, gemini (default: all detected)")
+    agx = ag.add_mutually_exclusive_group()
+    agx.add_argument("--uninstall", action="store_true", help="Remove the hook and instruction block again")
+    agx.add_argument("--list", action="store_true", help="Show which agents are detected and installed")
     return parser
 
 
@@ -348,6 +356,40 @@ def _cmd_install_desktop(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_install_agents(args: argparse.Namespace) -> int:
+    from vocal import agents
+
+    unknown = [n for n in args.names if n not in agents.AGENTS]
+    if unknown:
+        print(f"Unknown agent(s): {', '.join(unknown)}. Choose from: {', '.join(agents.AGENTS)}", file=sys.stderr)
+        return 2
+    found = agents.detected()
+    if args.list:
+        for name, spec in agents.AGENTS.items():
+            state = "not detected" if name not in found else (
+                "installed" if agents.is_installed(name) else "detected")
+            print(f"{name:8} {spec.title:12} {state:13} {agents.hooks_path(spec)}, {agents.instructions_path(spec)}")
+        return 0
+    names = args.names or found
+    if not names:
+        looked = ", ".join(f"~/{s.home}" for s in agents.AGENTS.values())
+        print(f"No AI agents detected (looked for {looked} and their commands on PATH).", file=sys.stderr)
+        return 1
+    try:
+        touched = agents.uninstall(names) if args.uninstall else agents.install(names)
+    except agents.AgentConfigError as e:
+        print(f"Nothing written: {e}", file=sys.stderr)
+        return 1
+    verb = "Removed Vocal from" if args.uninstall else "Installed Vocal for"
+    print(f"{verb}: {', '.join(agents.AGENTS[n].title for n in names)}")
+    if not args.uninstall:
+        print(f"Hook command: {agents.hook_command()}")
+    print(("Wrote:\n  " + "\n  ".join(map(str, touched))) if touched else "Already up to date; nothing written.")
+    if not args.uninstall:
+        print("Start a new agent session to pick up the hook; the Vocal daemon must be running to hear it.")
+    return 0
+
+
 # ── Daemon ──────────────────────────────────────────────────────────
 
 
@@ -442,6 +484,8 @@ def main() -> None:
         sys.exit(_cmd_models(args))
     if args.command == "install-desktop":
         sys.exit(_cmd_install_desktop(args))
+    if args.command == "install-agents":
+        sys.exit(_cmd_install_agents(args))
 
     if args.list_devices:
         list_audio_devices()
