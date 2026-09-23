@@ -1,7 +1,9 @@
 """Piper backend (``piper-tts`` >= 1.7, ONNX, CPU, embeds espeak-ng).
 
 ``model`` for :meth:`load` is the ``.onnx`` file (its ``.onnx.json`` must
-sit alongside) or a directory containing exactly one such pair.
+sit alongside) or a directory containing exactly one such pair. ``style`` is
+the speaker id (as a string) for multi-speaker models; loading the same model
+again only switches the speaker.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ class PiperBackend(TTSBackend):
     def __init__(self) -> None:
         super().__init__()
         self._voice = None
+        self._model: Path | None = None
+        self._speaker: int | None = None
         self._sample_rate = 22050
         self._loaded = False
 
@@ -35,6 +39,9 @@ class PiperBackend(TTSBackend):
     def load(self, model: Path | None, style: str | None = None) -> None:
         if model is None:
             raise ValueError("Piper needs a model path")
+        self._speaker = int(style) if style else None
+        if self._loaded and model == self._model:
+            return
         try:
             from piper import PiperVoice
         except ImportError as e:  # pragma: no cover - exercised via is_available
@@ -49,13 +56,14 @@ class PiperBackend(TTSBackend):
         self._voice = PiperVoice.load(str(onnx), config_path=str(config))
         with open(config, encoding="utf-8") as f:
             self._sample_rate = int(json.load(f)["audio"]["sample_rate"])
+        self._model = model
         self._loaded = True
 
     def synthesize(self, text: str) -> Synthesis:
         assert self._voice is not None
         from piper import SynthesisConfig
 
-        syn = SynthesisConfig(length_scale=1.0 / max(self.speed, 0.1))
+        syn = SynthesisConfig(speaker_id=self._speaker, length_scale=1.0 / max(self.speed, 0.1))
 
         def _chunks() -> Iterator[np.ndarray]:
             for chunk in self._voice.synthesize(text, syn_config=syn):
@@ -65,4 +73,5 @@ class PiperBackend(TTSBackend):
 
     def unload(self) -> None:
         self._voice = None
+        self._model = None
         self._loaded = False

@@ -12,7 +12,9 @@ import pytest
 
 from vocal.config import SpeechConfig
 from vocal.output.backends.base import Synthesis, TTSBackend
-from vocal.output.speech import SpeechController, split_sentences
+from vocal.output import speech
+from vocal.output.models import DEFAULT_VOICE, VoiceNotFoundError, VoiceSpec, get_voice
+from vocal.output.speech import SayResult, SpeechController, split_sentences
 
 
 class FakeBackend(TTSBackend):
@@ -90,9 +92,23 @@ def _controller(player: FakePlayer | None = None, **cfg) -> tuple[SpeechControll
         on_speech_start=lambda: events.append("start"),
         on_speech_end=lambda: events.append("end"),
     )
-    # Pretend the configured voice is what the fake backend has loaded.
-    ctl._backend_voice = ctl.voice
+    _offline(ctl)
     return ctl, backend, player, events
+
+
+def _offline(ctl: SpeechController, fail: tuple[str, ...] = ()) -> list[tuple[str, str | None]]:
+    """Resolve voices without touching the models dir; record (voice, model_path)
+    per load and raise for voices in ``fail``."""
+    located: list[tuple[str, str | None]] = []
+
+    def locate(voice: str, model_path: str | None) -> tuple[Path | None, VoiceSpec]:
+        located.append((voice, model_path))
+        if voice in fail:
+            raise VoiceNotFoundError(f"{voice} is not downloaded")
+        return None, get_voice(voice)
+
+    ctl._locate = locate  # type: ignore[method-assign]
+    return located
 
 
 def _wait_idle(ctl: SpeechController, timeout: float = 3.0) -> None:
@@ -242,7 +258,7 @@ def test_stop_does_not_wait_for_stale_render() -> None:
         on_speech_start=lambda: events.append("start"),
         on_speech_end=lambda: events.append("end"),
     )
-    ctl._backend_voice = ctl.voice
+    _offline(ctl)
     ctl.say("One. Two.")
     _wait_for(lambda: ctl.is_speaking and backend.rendering.is_set())
     t0 = time.monotonic()
@@ -320,24 +336,175 @@ def test_set_voice_validates_and_updates() -> None:
     ctl.shutdown()
 
 
-def test_apply_config_invalidates_loaded_voice_only_when_needed() -> None:
+def test_apply_config_adopts_in_place() -> None:
     from dataclasses import replace
 
     ctl, _, player, _ = _controller()
     cfg_ref = ctl._config
-    assert ctl._backend_voice == ctl.voice
 
-    # speed/volume only: no reload, same config object mutated
-    ctl.apply_config(replace(cfg_ref, speed=1.5, volume=40))
-    assert ctl._backend_voice == ctl.voice
+    ctl.apply_config(replace(cfg_ref, speed=1.5, volume=40, voice="piper-en_US-amy-low"))
     assert ctl._config is cfg_ref and cfg_ref.speed == 1.5 and cfg_ref.volume == 40
-
-    # voice change: loaded voice invalidated
-    ctl.apply_config(replace(cfg_ref, voice="piper-en_US-amy-low"))
-    assert ctl._backend_voice is None and ctl.voice == "piper-en_US-amy-low"
+    assert ctl.voice == "piper-en_US-amy-low"
 
     # device change: player re-targeted
     player.set_device = lambda d: setattr(player, "device", d)  # type: ignore[attr-defined]
     ctl.apply_config(replace(cfg_ref, device="USB Audio"))
     assert player.device == "USB Audio"  # type: ignore[attr-defined]
     ctl.shutdown()
+
+
+# ── Per-request voices ──
+
+
+def test_say_with_known_voice_uses_it() -> None:
+    ctl, _, _, _ = _controller()
+    located = _offline(ctl)
+    assert ctl.say("Hi.", voice="AF_SARAH") == SayResult("kokoro-af_sarah")
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert [v for v, _ in located] == ["kokoro-af_sarah"]
+
+
+@pytest.mark.parametrize("voice", [None, "", "  "])
+def test_say_without_voice_uses_default_silently(voice: str | None) -> None:
+    ctl, _, _, _ = _controller()
+    located = _offline(ctl)
+    assert ctl.say("Hi.", voice=voice) == SayResult(DEFAULT_VOICE)
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert [v for v, _ in located] == [DEFAULT_VOICE]
+
+
+def test_say_with_unknown_voice_falls_back_to_default() -> None:
+    ctl, backend, _, _ = _controller(voice="piper-en_US-amy-low")
+    located = _offline(ctl)
+    assert ctl.say("Hi.", voice="nonsense") == SayResult("piper-en_US-amy-low", "unknown voice 'nonsense'")
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert [v for v, _ in located] == ["piper-en_US-amy-low"] and backend.texts == ["Hi."]
+
+
+def test_unloadable_requested_voice_falls_back_without_critical_notify(monkeypatch: pytest.MonkeyPatch) -> None:
+    notes: list[str] = []
+    monkeypatch.setattr(speech, "notify", lambda title, *a, **k: notes.append(title))
+    ctl, backend, _, _ = _controller()
+    located = _offline(ctl, fail=("kokoro-am_adam",))
+    ctl.say("Hi.", voice="am_adam")
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert [v for v, _ in located] == ["kokoro-am_adam", DEFAULT_VOICE]
+    assert backend.texts == ["Hi."] and notes == []
+
+
+def test_unloadable_default_notifies(monkeypatch: pytest.MonkeyPatch) -> None:
+    notes: list[str] = []
+    monkeypatch.setattr(speech, "notify", lambda title, *a, **k: notes.append(title))
+    ctl, backend, _, _ = _controller()
+    _offline(ctl, fail=(DEFAULT_VOICE,))
+    ctl.say("Hi.")
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert backend.texts == [] and notes == ["Vocal — speech unavailable"]
+
+
+def test_model_path_applies_only_to_default_voice() -> None:
+    ctl, _, _, _ = _controller(model_path="/models/custom")
+    located = _offline(ctl)
+    ctl.say("One.")
+    ctl.say("Two.", voice="piper-en_US-amy-low")
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert located == [(DEFAULT_VOICE, "/models/custom"), ("piper-en_US-amy-low", None)]
+
+
+def test_unknown_configured_voice_uses_builtin_default() -> None:
+    ctl, _, _, _ = _controller(voice="piper-en-lessac-medium")  # pre-0.5 name
+    assert ctl.voice == DEFAULT_VOICE
+    located = _offline(ctl)
+    ctl.say("Hi.")
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert [v for v, _ in located] == [DEFAULT_VOICE]
+
+
+def test_one_backend_per_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: list[str] = []
+
+    def fake_resolve_backend(name: str) -> FakeBackend:
+        created.append(name)
+        return FakeBackend()
+
+    monkeypatch.setattr(speech, "resolve_backend", fake_resolve_backend)
+    ctl = SpeechController(SpeechConfig(), player=FakePlayer())
+    _offline(ctl)
+    for voice in ("af_sarah", "en_US-amy-low", "am_adam", "en_US-lessac-medium", "bf_emma"):
+        ctl.say("Hi.", voice=voice)
+    _wait_idle(ctl)
+    ctl.shutdown()
+    assert created == ["kokoro", "piper"]
+
+
+# ── Backends: same model reloads nothing, only the speaker changes ──
+
+
+def test_kokoro_speaker_switch_keeps_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    import types
+
+    from vocal.output.backends.kokoro import KokoroBackend
+
+    built: list[str] = []
+    calls: list[tuple[str, str]] = []
+
+    class Kokoro:
+        def __init__(self, onnx: str, voices: str) -> None:
+            built.append(onnx)
+
+        def create(self, text: str, voice: str, speed: float, lang: str):
+            calls.append((voice, lang))
+            return np.zeros(10, dtype=np.float32), 24000
+
+    monkeypatch.setitem(sys.modules, "kokoro_onnx", types.SimpleNamespace(Kokoro=Kokoro))
+    for f in ("kokoro-v1.0.onnx", "voices-v1.0.bin"):
+        (tmp_path / f).write_bytes(b"")
+    backend = KokoroBackend()
+    for style in ("af_sarah", "bf_emma", "ef_dora"):
+        backend.load(tmp_path, style)
+        backend.synthesize("Hi.")
+    assert len(built) == 1
+    assert calls == [("af_sarah", "en-us"), ("bf_emma", "en-gb"), ("ef_dora", "es")]
+
+
+def test_piper_speaker_id_reaches_synthesis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+    import sys
+    import types
+
+    from vocal.output.backends.piper import PiperBackend
+
+    loads: list[str] = []
+    speakers: list[int | None] = []
+
+    class Voice:
+        def synthesize(self, text: str, syn_config):
+            speakers.append(syn_config.speaker_id)
+            return iter(())
+
+    class PiperVoice:
+        @staticmethod
+        def load(onnx: str, config_path: str) -> Voice:
+            loads.append(onnx)
+            return Voice()
+
+    class SynthesisConfig:
+        def __init__(self, speaker_id=None, length_scale=None) -> None:
+            self.speaker_id = speaker_id
+
+    monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(PiperVoice=PiperVoice, SynthesisConfig=SynthesisConfig))
+    (tmp_path / "v.onnx").write_bytes(b"")
+    (tmp_path / "v.onnx.json").write_text(json.dumps({"audio": {"sample_rate": 22050}}))
+    backend = PiperBackend()
+    for style in (None, "12", "3"):
+        backend.load(tmp_path, style)
+        list(backend.synthesize("Hi.").chunks)
+    assert len(loads) == 1 and speakers == [None, 12, 3]

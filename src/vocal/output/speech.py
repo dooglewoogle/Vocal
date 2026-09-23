@@ -10,13 +10,21 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
 from vocal.config import SpeechConfig, copy_into
 from vocal.notify import notify
-from vocal.output.backends import BackendUnavailable, TTSBackend, resolve_backend
-from vocal.output.models import VoiceNotFoundError, get_voice, resolve_model_path
+from vocal.output.backends import BACKENDS, BackendUnavailable, TTSBackend, resolve_backend
+from vocal.output.models import (
+    DEFAULT_VOICE,
+    VoiceNotFoundError,
+    VoiceSpec,
+    get_voice,
+    resolve_model_path,
+    resolve_voice,
+)
 from vocal.output.playback import AudioPlayer
 
 logger = logging.getLogger(__name__)
@@ -37,6 +45,14 @@ def split_sentences(text: str) -> list[str]:
 class Utterance:
     text: str
     voice: str | None = None
+
+
+@dataclass(frozen=True)
+class SayResult:
+    """What :meth:`SpeechController.say` did with the requested voice."""
+
+    voice: str  # canonical voice that will speak (the default when falling back)
+    fallback: str | None = None  # why the requested voice was not used
 
 
 @dataclass
@@ -82,6 +98,12 @@ class SpeechController:
     thread (Kokoro cannot be interrupted mid-sentence) does not delay idle or
     the run's end. ``_playing`` covers the one thing that must finish first:
     the play thread returning from an aborted ``play()``.
+
+    Voices: each utterance may name its own voice. An unknown name, or one
+    whose model cannot be loaded, falls back to the default voice (the
+    configured one, or ``DEFAULT_VOICE`` if that is itself unknown). One
+    backend per engine stays loaded, so alternating voices only reloads when
+    the model file changes; Kokoro speakers share one model.
     """
 
     def __init__(
@@ -94,8 +116,9 @@ class SpeechController:
     ) -> None:
         self._config = config
         self._player = player or AudioPlayer(config.device)
-        self._backend = backend  # injected for tests; otherwise resolved lazily
-        self._backend_voice: str | None = None  # voice currently loaded
+        # One backend per engine, created lazily. An injected (test) backend serves every engine.
+        self._backends: dict[str, TTSBackend] = dict.fromkeys(BACKENDS, backend) if backend else {}
+        self._warned_config_voice: str | None = None
         self.on_speech_start = on_speech_start
         self.on_speech_end = on_speech_end
 
@@ -117,16 +140,15 @@ class SpeechController:
 
     @property
     def voice(self) -> str:
-        return self._config.voice
+        """The default voice: the configured one if it resolves, else ``DEFAULT_VOICE``."""
+        found = resolve_voice(self._config.voice)
+        return found[0] if found else DEFAULT_VOICE
 
     @property
     def backend_name(self) -> str:
-        if self._backend is not None:
-            return self._backend.name
-        try:
-            return get_voice(self._config.voice).backend
-        except VoiceNotFoundError:
-            return "unknown"
+        engine = get_voice(self.voice).backend
+        backend = self._backends.get(engine)
+        return backend.name if backend is not None else engine
 
     @property
     def is_speaking(self) -> bool:
@@ -146,18 +168,31 @@ class SpeechController:
         self._synth.start()
         self._play.start()
 
-    def say(self, text: str, interrupt: bool = False, voice: str | None = None) -> None:
-        """Enqueue ``text``. ``interrupt`` flushes everything first."""
+    def say(self, text: str, interrupt: bool = False, voice: str | None = None) -> SayResult:
+        """Enqueue ``text``. ``interrupt`` flushes everything first.
+
+        ``voice`` may be any name :func:`resolve_voice` accepts; an unknown one
+        falls back to the default voice (reported in the result, never raised).
+        """
+        found = resolve_voice(voice)
+        if found is not None:
+            result = SayResult(found[0])
+        elif voice and voice.strip():
+            result = SayResult(self.voice, f"unknown voice {voice!r}")
+            logger.warning("Unknown voice %r; using the default voice %s", voice, result.voice)
+        else:
+            result = SayResult(self.voice)
         text = text.strip()
         if not text:
-            return
+            return result
         if interrupt:
             self.stop()
         self.start()
         with self._state_lock:
             self._work += 1
             self._idle.clear()
-            self._queue.put(Utterance(text, voice))
+            self._queue.put(Utterance(text, found[0] if found else None))
+        return result
 
     def stop(self) -> None:
         """Flush the queue and halt playback. Blocks until idle unless called
@@ -179,7 +214,7 @@ class SpeechController:
         return self._idle.wait(timeout)
 
     def set_voice(self, name: str) -> None:
-        """Switch voice (downloading if needed) on the synth thread."""
+        """Make ``name`` the default voice; it loads (downloading if needed) on next use."""
         get_voice(name)  # validate now so callers get an immediate error
         new = copy.copy(self._config)
         new.voice = name
@@ -189,19 +224,14 @@ class SpeechController:
         """Adopt ``new`` in place on this controller (other components hold a
         reference to it and to our config object).
 
-        Voice / model_path changes invalidate the loaded voice so the
-        next utterance reloads; a device change re-targets the player. speed and
-        volume are read per utterance and need nothing.
+        Voice, model_path, speed and volume are read per utterance (a backend
+        reloads only if the model it needs changed); a device change re-targets
+        the player.
         """
         with self._voice_lock:
             old = self._config
-            reload = (old.voice, old.model_path) != (new.voice, new.model_path)
             device_changed = old.device != new.device
             copy_into(old, new)
-        if reload:
-            # Any queued utterance without an explicit voice picks up the new one;
-            # force a reload on next synthesis.
-            self._backend_voice = None
         if device_changed:
             self._player.set_device(new.device)
 
@@ -219,8 +249,8 @@ class SpeechController:
             if self._play is not None and me is not self._play:
                 self._play.join(timeout=5.0)
             self._synth = self._play = None
-        if self._backend is not None:
-            self._backend.unload()
+        for backend in {id(b): b for b in self._backends.values()}.values():
+            backend.unload()
 
     # ── Shared bookkeeping ───────────────────────────────────────────
 
@@ -295,33 +325,49 @@ class SpeechController:
             finally:
                 self._retire(epoch)
 
-    def _ensure_backend(self, voice: str) -> TTSBackend | None:
-        """Load backend/voice if not already loaded. Returns None on failure."""
-        if self._backend is not None and self._backend_voice == voice and self._backend.loaded:
-            self._backend.speed = self._config.speed
-            return self._backend
+    def _default_voice(self) -> str:
+        """``voice``, warning once per bad configured value."""
+        configured = self._config.voice
+        if resolve_voice(configured) is None and configured != self._warned_config_voice:
+            self._warned_config_voice = configured
+            logger.warning("Configured voice %r is unknown; using %s", configured, DEFAULT_VOICE)
+        return self.voice
+
+    def _locate(self, voice: str, model_path: str | None) -> tuple[Path | None, VoiceSpec]:
+        """Model path and spec for ``voice``, downloading if allowed (blocks)."""
+        return resolve_model_path(
+            voice, model_path, self._config.auto_download,
+            progress=lambda msg: (logger.info("%s", msg), notify("Vocal", msg, icon="audio-speakers")),
+        )
+
+    def _ensure_backend(self, voice: str, default: str) -> TTSBackend | None:
+        """The engine for ``voice`` with its model loaded, or None on failure.
+
+        ``model_path`` only overrides the default voice: it points at one model
+        and would be wrong for any other voice a request names.
+        """
         try:
-            path, spec = resolve_model_path(
-                voice, self._config.model_path, self._config.auto_download,
-                progress=lambda msg: (logger.info("%s", msg), notify("Vocal", msg, icon="audio-speakers")),
-            )
-            if self._backend is None or self._backend.name != spec.backend:
-                if self._backend is not None:
-                    self._backend.unload()
-                self._backend = resolve_backend(spec.backend)
-            self._backend.speed = self._config.speed
-            self._backend.load(path, spec.style)
-            self._backend_voice = voice
-            return self._backend
+            path, spec = self._locate(voice, self._config.model_path if voice == default else None)
+            backend = self._backends.get(spec.backend)
+            if backend is None:
+                backend = self._backends[spec.backend] = resolve_backend(spec.backend)
+            backend.speed = self._config.speed
+            backend.load(path, spec.style)  # no-op / speaker switch when the model is already loaded
+            return backend
         except (VoiceNotFoundError, BackendUnavailable, FileNotFoundError, ValueError) as e:
             logger.error("Cannot load voice %r: %s", voice, e)
-            notify("Vocal — speech unavailable", str(e), urgency="critical", icon="dialog-error")
+            if voice == default:  # a requested voice falls back instead
+                notify("Vocal — speech unavailable", str(e), urgency="critical", icon="dialog-error")
             return None
 
     def _synthesize(self, item: Utterance, epoch: int) -> None:
         with self._voice_lock:
-            voice = item.voice or self._config.voice
-        backend = self._ensure_backend(voice)
+            default = self._default_voice()
+        voice = item.voice or default
+        backend = self._ensure_backend(voice, default)  # may block on a download
+        if backend is None and voice != default:
+            logger.warning("Voice %s unavailable; falling back to %s", voice, default)
+            backend = self._ensure_backend(default, default)
         if backend is None:
             return
         gain = max(0, min(100, self._config.volume)) / 100.0
