@@ -49,7 +49,7 @@ def test_no_args_is_daemon():
 
 def test_say_parsing():
     a = parse_args(["say", "-i", "--voice", "system", "hello", "there"])
-    assert a.command == "say" and a.interrupt is True and a.voice == "system"
+    assert a.command == "say" and a.interrupt is True and a.say_voice == "system"
     assert a.text == ["hello", "there"]
     assert parse_args(["say"]).text == []
     assert parse_args(["say", "-"]).text == ["-"]
@@ -112,3 +112,37 @@ def test_install_desktop_parsing() -> None:
     assert parse_args(["install-desktop", "--autostart"]).autostart is True
     assert parse_args(["install-desktop", "--no-autostart"]).autostart is False
     assert parse_args(["install-desktop", "--uninstall"]).uninstall is True
+
+
+# ── say / models commands ──
+
+
+def test_say_reports_daemon_fallback(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    from vocal import cli
+    from vocal.output import client
+
+    sent = []
+
+    def fake_say(text, interrupt=False, voice=None):
+        sent.append(voice)
+        return {"ok": True, "voice": "kokoro-bf_emma", "fallback": f"unknown voice {voice!r}"}
+
+    monkeypatch.setattr(client, "say", fake_say)
+    assert cli._cmd_say(parse_args(["say", "--voice", "nope", "hi"])) == 0
+    assert sent == ["nope"]
+    assert capsys.readouterr().err.strip() == "Unknown voice 'nope'; using kokoro-bf_emma"
+
+
+def test_models_list_filters_and_marks_default(tmp_path, monkeypatch: pytest.MonkeyPatch,
+                                               capsys: pytest.CaptureFixture) -> None:
+    from vocal import cli
+
+    monkeypatch.setenv("VOCAL_MODELS_DIR", str(tmp_path / "models"))
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[output.speech]\nvoice = "piper-en_GB-alan-medium"\n')
+    assert cli._cmd_models(parse_args(["--config", str(cfg), "models", "list", "EN_GB-ALAN"])) == 0
+    out = capsys.readouterr().out
+    assert "piper · English (Great Britain)" in out
+    assert "[ ]*piper-en_GB-alan-medium" in out and "[ ] piper-en_GB-alan-low" in out
+    assert "kokoro-" not in out  # only the matches are listed
+    assert cli._cmd_models(parse_args(["--config", str(cfg), "models", "list", "zzz-no-such-voice"])) == 1

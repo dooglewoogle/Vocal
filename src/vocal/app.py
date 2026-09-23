@@ -29,7 +29,7 @@ from vocal.config import (
 )
 from vocal.input.base_engine import BaseDictationEngine
 from vocal.input.phrasebook import Phrasebook, load_phrasebook
-from vocal.output.speech import SpeechController
+from vocal.output.speech import SayResult, SpeechController
 from vocal.state import DictationState
 
 logger = logging.getLogger(__name__)
@@ -159,8 +159,8 @@ class VocalApp:
         else:
             logger.info("Pause requested — not supported in %s mode", self.config.input.engine)
 
-    def say(self, text: str, *, interrupt: bool = False, voice: str | None = None) -> None:
-        self.speech.say(text, interrupt=interrupt, voice=voice)
+    def say(self, text: str, *, interrupt: bool = False, voice: str | None = None) -> SayResult:
+        return self.speech.say(text, interrupt=interrupt, voice=voice)
 
     def stop_speaking(self) -> None:
         self.speech.stop()

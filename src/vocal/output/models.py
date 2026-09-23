@@ -191,6 +191,17 @@ def voice_dir(spec: VoiceSpec) -> Path:
     return models_dir() / spec.backend / spec.dir_name
 
 
+def matches(spec: VoiceSpec, needle: str) -> bool:
+    """Case-insensitive substring match over name, language and description."""
+    needle = needle.strip().lower()
+    haystack = f"{spec.name} {spec.language} {spec.language_name} {spec.description}".lower()
+    return needle in haystack
+
+
+def human_size(n: int) -> str:
+    return f"{n / 1e6:.0f} MB" if n else ""
+
+
 def get_voice(name: str) -> VoiceSpec:
     found = resolve_voice(name)
     if found is None:

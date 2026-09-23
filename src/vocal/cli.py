@@ -142,7 +142,9 @@ def build_parser() -> argparse.ArgumentParser:
     say = sub.add_parser("say", help="Speak text (via the running daemon, or in-process)")
     say.add_argument("text", nargs="*", help="Text to speak; omit or use '-' to read stdin")
     say.add_argument("--interrupt", "-i", action="store_true", help="Cut off current speech first")
-    say.add_argument("--voice", type=str, default=None, help="Voice name for this utterance")
+    # Own dest: the root --voice changes the default voice, this one only this utterance.
+    say.add_argument("--voice", dest="say_voice", type=str, default=None,
+                     help="Voice for this utterance; an unknown name uses the default voice")
 
     sub.add_parser("stop", help="Stop speaking and clear the queue")
     sub.add_parser("status", help="Show daemon speech status")
@@ -150,7 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
     models = sub.add_parser("models", help="Manage TTS voice models")
     msub = models.add_subparsers(dest="models_command", metavar="ACTION")
     models.set_defaults(models_command="list")
-    msub.add_parser("list", help="List known voices and whether they are downloaded")
+    lst = msub.add_parser("list", help="List known voices and whether they are downloaded")
+    lst.add_argument("filter", nargs="?", default="", help="Only voices whose name, language or description contains this")
     dl = msub.add_parser("download", help="Download a voice")
     dl.add_argument("name")
     rm = msub.add_parser("remove", help="Delete a downloaded voice")
@@ -267,11 +270,13 @@ def _cmd_say(args: argparse.Namespace) -> int:
         print("Nothing to say.", file=sys.stderr)
         return 1
     try:
-        if client.say(text, interrupt=args.interrupt, voice=args.voice):
-            return 0
+        reply = client.say(text, interrupt=args.interrupt, voice=args.say_voice)
     except client.DaemonError as e:
         print(f"Daemon rejected request: {e}", file=sys.stderr)
         return 1
+    if reply is not None:
+        _report_fallback(reply.get("voice"), reply.get("fallback"))
+        return 0
 
     # No daemon — synthesize in this process.
     from vocal.output.speech import SpeechController
@@ -281,13 +286,19 @@ def _cmd_say(args: argparse.Namespace) -> int:
     logger.info("No vocal daemon running; speaking in-process")
     controller = SpeechController(config.output.speech)
     try:
-        controller.say(text)
+        result = controller.say(text, voice=args.say_voice)
+        _report_fallback(result.voice, result.fallback)
         controller.wait()
     except KeyboardInterrupt:
         controller.stop()
     finally:
         controller.shutdown()
     return 0
+
+
+def _report_fallback(voice: str | None, fallback: str | None) -> None:
+    if fallback:
+        print(f"{fallback[:1].upper()}{fallback[1:]}; using {voice}", file=sys.stderr)
 
 
 def _cmd_stop(_args: argparse.Namespace) -> int:
@@ -312,23 +323,39 @@ def _cmd_status(_args: argparse.Namespace) -> int:
 
 def _cmd_models(args: argparse.Namespace) -> int:
     from vocal.output.models import (
+        DEFAULT_VOICE,
         VOICES,
         VoiceNotFoundError,
         download_voice,
+        human_size,
         is_downloaded,
+        matches,
         models_dir,
         remove_voice,
+        resolve_voice,
     )
 
     action = args.models_command
     try:
         if action == "list":
-            print(f"Models directory: {models_dir()}\n")
-            width = max(len(n) for n in VOICES)
-            for name, spec in VOICES.items():
+            config = _load_config_or_exit(args)
+            found = resolve_voice(config.output.speech.voice)
+            default = found[1].name if found else DEFAULT_VOICE
+            shown = [s for s in VOICES.values() if matches(s, getattr(args, "filter", ""))]
+            if not shown:
+                print(f"No voice matches {args.filter!r}.", file=sys.stderr)
+                return 1
+            print(f"Models directory: {models_dir()}")
+            width = max(len(s.name) for s in shown)
+            group = None
+            for spec in sorted(shown, key=lambda s: (s.backend, s.language_name, s.name)):
+                if (spec.backend, spec.language_name) != group:
+                    group = (spec.backend, spec.language_name)
+                    print(f"\n{spec.backend}" + (f" · {spec.language_name}" if spec.language_name else ""))
                 mark = "✓" if is_downloaded(spec) else " "
-                print(f"  [{mark}] {name:<{width}}  {spec.backend:<7} {spec.description}")
-            print("\n[✓] = downloaded. Fetch with: vocal models download NAME")
+                star = "*" if spec.name == default else " "
+                print(f"  [{mark}]{star}{spec.name:<{width}}  {human_size(spec.size_bytes):>7}  {spec.description}")
+            print("\n[✓] = downloaded, * = default voice. Fetch with: vocal models download NAME")
         elif action == "download":
             download_voice(args.name, progress=print)
         elif action == "remove":

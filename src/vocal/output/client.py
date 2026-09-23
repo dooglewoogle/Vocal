@@ -41,11 +41,12 @@ def _request(method: str, path: str, body: dict | None = None, timeout: float = 
         return None
 
 
-def say(text: str, interrupt: bool = False, voice: str | None = None, **kw) -> bool:
+def say(text: str, interrupt: bool = False, voice: str | None = None, **kw) -> dict | None:
+    """The daemon's ``/say`` response (``voice``, ``fallback``, ...), or None if no daemon."""
     body: dict = {"text": text, "interrupt": interrupt}
     if voice:
         body["voice"] = voice
-    return _request("POST", "/say", body, **kw) is not None
+    return _request("POST", "/say", body, **kw)
 
 
 def stop(**kw) -> bool:

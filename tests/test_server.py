@@ -12,6 +12,7 @@ import pytest
 
 from vocal.output import client
 from vocal.output.server import SpeechServer, read_runtime_info
+from vocal.output.speech import SayResult
 
 
 class StubController:
@@ -26,10 +27,11 @@ class StubController:
     def queue_length(self) -> int:
         return len(self.said)
 
-    def say(self, text: str, interrupt: bool = False, voice: str | None = None) -> None:
-        if voice == "bad":
-            raise ValueError("unknown voice")
+    def say(self, text: str, interrupt: bool = False, voice: str | None = None) -> SayResult:
         self.said.append((text, interrupt, voice))
+        if voice == "bad":
+            return SayResult(self.voice, "unknown voice 'bad'")
+        return SayResult(voice or self.voice)
 
     def stop(self) -> None:
         self.stops += 1
@@ -82,14 +84,21 @@ def test_health_and_status(server) -> None:
     assert _call(srv, "GET", "/health") == (200, {"ok": True})
     status, body = _call(srv, "GET", "/status")
     assert status == 200
-    assert body == {"speaking": False, "queue": 0, "voice": ctl.voice, "backend": "piper"}
+    assert body == {"speaking": False, "queue": 0, "default_voice": ctl.voice, "backend": "piper"}
 
 
 def test_say_enqueues(server) -> None:
     srv, ctl, _ = server
     status, body = _call(srv, "POST", "/say", {"text": "hello", "interrupt": True, "voice": "system"})
-    assert status == 202 and body["ok"] is True
+    assert (status, body) == (202, {"ok": True, "queue": 1, "voice": "system", "fallback": None})
     assert ctl.said == [("hello", True, "system")]
+
+
+def test_say_unknown_voice_is_accepted_with_fallback(server) -> None:
+    srv, ctl, _ = server
+    status, body = _call(srv, "POST", "/say", {"text": "hello", "voice": "bad"})
+    assert status == 202
+    assert body["voice"] == ctl.voice and body["fallback"] == "unknown voice 'bad'"
 
 
 def test_say_validation(server) -> None:
@@ -97,7 +106,6 @@ def test_say_validation(server) -> None:
     assert _call(srv, "POST", "/say", {"text": ""})[0] == 400
     assert _call(srv, "POST", "/say", {"text": 5})[0] == 400
     assert _call(srv, "POST", "/say", {"text": "x", "voice": 1})[0] == 400
-    assert _call(srv, "POST", "/say", {"text": "x", "voice": "bad"})[0] == 400
     assert _call(srv, "POST", "/say", ["not", "an", "object"])[0] == 400
 
 
@@ -111,17 +119,18 @@ def test_stop_and_404(server) -> None:
 
 def test_client_roundtrip(server) -> None:
     srv, ctl, rt = server
-    assert client.say("via client", runtime_file=rt) is True
+    assert client.say("via client", runtime_file=rt)["voice"] == ctl.voice
     assert ctl.said == [("via client", False, None)]
+    assert client.say("x", voice="bad", runtime_file=rt)["fallback"] == "unknown voice 'bad'"
     assert client.stop(runtime_file=rt) is True
     assert client.status(runtime_file=rt)["backend"] == "piper"
     with pytest.raises(client.DaemonError, match="400"):
-        client.say("x", voice="bad", runtime_file=rt)
+        client.say("", runtime_file=rt)
 
 
 def test_client_without_daemon(tmp_path: Path) -> None:
     missing = tmp_path / "none.json"
-    assert client.say("x", runtime_file=missing) is False
+    assert client.say("x", runtime_file=missing) is None
     assert client.status(runtime_file=missing) is None
     # stale runtime file pointing at a closed port
     stale = tmp_path / "stale.json"
@@ -129,7 +138,7 @@ def test_client_without_daemon(tmp_path: Path) -> None:
     srv.start()
     srv.stop()
     stale.write_text(json.dumps({"host": "127.0.0.1", "port": srv.port}))
-    assert client.say("x", runtime_file=stale) is False
+    assert client.say("x", runtime_file=stale) is None
 
 
 def test_port_fallback_to_ephemeral(tmp_path: Path) -> None:

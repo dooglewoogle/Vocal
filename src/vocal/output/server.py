@@ -1,9 +1,14 @@
 """Localhost HTTP control plane for text-to-speech.
 
     POST /say     {"text": "...", "interrupt": false, "voice": null}
+                  -> 202 {"ok", "queue", "voice", "fallback"}
     POST /stop
-    GET  /status  -> {"speaking", "queue", "voice", "backend"}
+    GET  /status  -> {"speaking", "queue", "default_voice", "backend"}
     GET  /health  -> {"ok": true}
+
+``voice`` is optional; a missing or unknown one speaks in the default voice.
+The response names the voice that will speak, and ``fallback`` says why the
+requested one was not used (null when it was).
 
 The server binds to loopback only and needs no credentials. Requests that
 carry an ``Origin`` header are refused: browsers always add one to
@@ -80,7 +85,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/status":
             return self._send(HTTPStatus.OK, {
                 "speaking": ctl.is_speaking, "queue": ctl.queue_length,
-                "voice": ctl.voice, "backend": ctl.backend_name,
+                "default_voice": ctl.voice, "backend": ctl.backend_name,
             })
         self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -101,11 +106,10 @@ class _Handler(BaseHTTPRequestHandler):
             voice = data.get("voice")
             if voice is not None and not isinstance(voice, str):
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "'voice' must be a string"})
-            try:
-                ctl.say(text, interrupt=bool(data.get("interrupt", False)), voice=voice)
-            except Exception as e:  # unknown voice etc.
-                return self._send(HTTPStatus.BAD_REQUEST, {"error": str(e)})
-            return self._send(HTTPStatus.ACCEPTED, {"ok": True, "queue": ctl.queue_length})
+            result = ctl.say(text, interrupt=bool(data.get("interrupt", False)), voice=voice)
+            return self._send(HTTPStatus.ACCEPTED, {
+                "ok": True, "queue": ctl.queue_length, "voice": result.voice, "fallback": result.fallback,
+            })
         self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
 
