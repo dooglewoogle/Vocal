@@ -172,7 +172,7 @@ def driver(window) -> None:
         time.sleep(1.5)
         log(f"speech settings applied: speed={app.config.output.speech.speed} disk={load_config(CONFIG_PATH).output.speech.speed} "
             f"engines built={len([t for t in threading.enumerate() if t.name == 'engine'])}")
-        ui(window, lambda: window.speech._voices.selection_set("piper-en-lessac-medium"))
+        ui(window, lambda: window.speech._voices.selection_set("piper-en_US-lessac-medium"))
         shot("3-speech")
         ui(window, lambda: window.speech._test())
         time.sleep(3.5)

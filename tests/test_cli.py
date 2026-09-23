@@ -63,8 +63,8 @@ def test_root_config_flag_before_subcommand():
 def test_models_parsing():
     assert parse_args(["models"]).models_command == "list"
     assert parse_args(["models", "list"]).models_command == "list"
-    a = parse_args(["models", "download", "piper-en-amy-low"])
-    assert a.models_command == "download" and a.name == "piper-en-amy-low"
+    a = parse_args(["models", "download", "piper-en_US-amy-low"])
+    assert a.models_command == "download" and a.name == "piper-en_US-amy-low"
     a = parse_args(["models", "remove", "x"])
     assert a.models_command == "remove" and a.name == "x"
 

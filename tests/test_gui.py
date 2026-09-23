@@ -148,14 +148,14 @@ def test_grids_mark_current_and_drive_apply(window) -> None:
     w, app = window
     assert w.dictation._models.set(app.config.input.model.size, "current") == "✓"
     assert w.speech._voices.set(app.config.output.speech.voice, "current") == "✓"
-    w.speech._voices.selection_set("piper-en-amy-low")
+    w.speech._voices.selection_set("piper-en_US-amy-low")
     w.speech._use_voice()
     import time
     deadline = time.time() + 2
     while time.time() < deadline and not any(c[0] == "voice" for c in app.calls if isinstance(c, tuple)):
         w._pump()
         time.sleep(0.01)
-    assert ("voice", "piper-en-amy-low") in app.calls
+    assert ("voice", "piper-en_US-amy-low") in app.calls
 
 
 def test_close_hides_with_tray_and_quits_without(window) -> None:

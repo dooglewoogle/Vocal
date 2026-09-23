@@ -315,8 +315,8 @@ def test_set_voice_validates_and_updates() -> None:
     ctl, _, _, _ = _controller()
     with pytest.raises(Exception):
         ctl.set_voice("not-a-voice")
-    ctl.set_voice("piper-en-amy-low")
-    assert ctl.voice == "piper-en-amy-low"
+    ctl.set_voice("piper-en_US-amy-low")
+    assert ctl.voice == "piper-en_US-amy-low"
     ctl.shutdown()
 
 
@@ -333,8 +333,8 @@ def test_apply_config_invalidates_loaded_voice_only_when_needed() -> None:
     assert ctl._config is cfg_ref and cfg_ref.speed == 1.5 and cfg_ref.volume == 40
 
     # voice change: loaded voice invalidated
-    ctl.apply_config(replace(cfg_ref, voice="piper-en-amy-low"))
-    assert ctl._backend_voice is None and ctl.voice == "piper-en-amy-low"
+    ctl.apply_config(replace(cfg_ref, voice="piper-en_US-amy-low"))
+    assert ctl._backend_voice is None and ctl.voice == "piper-en_US-amy-low"
 
     # device change: player re-targeted
     player.set_device = lambda d: setattr(player, "device", d)  # type: ignore[attr-defined]

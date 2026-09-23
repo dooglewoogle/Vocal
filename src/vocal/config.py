@@ -131,7 +131,7 @@ class InputConfig:
 
 @dataclass
 class SpeechConfig:
-    voice: str = "piper-en-lessac-medium"  # key in vocal.output.models.VOICES; decides the backend
+    voice: str = "kokoro-bf_emma"  # models.DEFAULT_VOICE; the fallback for requests naming no/unknown voice
     model_path: str | None = None  # manual model location; bypasses registry/download
     auto_download: bool = True
     speed: float = 1.0

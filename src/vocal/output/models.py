@@ -9,13 +9,14 @@ their path inside the source repo.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import shutil
 import sys
 import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -32,16 +33,20 @@ class VoiceNotFoundError(RuntimeError):
 class VoiceSpec:
     name: str
     backend: str
-    sample_rate: int
     license: str
     description: str = ""
+    language: str = ""  # locale code, e.g. "en_GB"
+    language_name: str = ""  # e.g. "English (Great Britain)"
+    size_bytes: int = 0  # total download; shared by every Kokoro voice
+    speakers: int = 1  # >1: multi-speaker Piper model, speaker picked with "#N"
     source: str = "hf"  # "hf" | "http" | "none"
     repo_id: str | None = None
     files: tuple[str, ...] = ()  # repo-relative paths (hf) or basenames (http)
     urls: tuple[str, ...] = ()  # for source="http", parallel to ``files``
     sha256: Mapping[str, str] = field(default_factory=dict)  # basename -> hex digest
+    md5: Mapping[str, str] = field(default_factory=dict)  # basename -> hex digest
     model_id: str | None = None  # shared directory; defaults to ``name``
-    style: str | None = None  # speaker for multi-speaker models
+    style: str | None = None  # Kokoro speaker name, or Piper speaker id as a string
 
     @property
     def dir_name(self) -> str:
@@ -52,15 +57,24 @@ class VoiceSpec:
         return tuple(Path(f).name for f in self.files)
 
 
-def _piper(name: str, lang_dir: str, voice: str, quality: str, desc: str, lang_code: str = "en_US") -> VoiceSpec:
-    stem = f"{lang_code}-{voice}-{quality}"
-    base = f"{lang_dir}/{voice}/{quality}/{stem}"
-    return VoiceSpec(
-        name=name, backend="piper", sample_rate=22050 if quality != "low" else 16000,
-        license="MIT (voice) / GPL-3.0 (engine)", description=desc,
-        source="hf", repo_id="rhasspy/piper-voices",
-        files=(f"{base}.onnx", f"{base}.onnx.json"),
-    )
+def _piper_voices() -> list[VoiceSpec]:
+    """Every Piper voice, from the vendored catalogue (scripts/gen_piper_voices.py)."""
+    catalogue = json.loads((Path(__file__).with_name("piper_voices.json")).read_text(encoding="utf-8"))
+    specs = []
+    for v in catalogue:
+        speakers = v["speakers"]
+        desc = f"{v['quality'].replace('_', '-')} quality"
+        if speakers > 1:
+            desc += f", {speakers} speakers (#0-#{speakers - 1})"
+        specs.append(VoiceSpec(
+            name=f"piper-{v['key']}", backend="piper", license="MIT (voice) / GPL-3.0 (engine)",
+            description=desc, language=v["lang"], language_name=v["language"],
+            size_bytes=sum(size for _, size, _ in v["files"]), speakers=speakers,
+            source="hf", repo_id="rhasspy/piper-voices",
+            files=tuple(path for path, _, _ in v["files"]),
+            md5={Path(path).name: digest for path, _, digest in v["files"]},
+        ))
+    return specs
 
 
 _KOKORO_RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
@@ -69,12 +83,42 @@ _KOKORO_SHA256 = {
     "kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
     "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
 }
+_KOKORO_SIZE = 325532387 + 28214398
+
+# First letter of a Kokoro style -> (locale, language name, espeak language).
+KOKORO_LANGUAGES: dict[str, tuple[str, str, str]] = {
+    "a": ("en_US", "English (United States)", "en-us"),
+    "b": ("en_GB", "English (Great Britain)", "en-gb"),
+    "e": ("es_ES", "Spanish (Spain)", "es"),
+    "f": ("fr_FR", "French (France)", "fr-fr"),
+    "h": ("hi_IN", "Hindi (India)", "hi"),
+    "i": ("it_IT", "Italian (Italy)", "it"),
+    "j": ("ja_JP", "Japanese (Japan)", "ja"),
+    "p": ("pt_BR", "Portuguese (Brazil)", "pt-br"),
+    "z": ("zh_CN", "Chinese (China)", "cmn"),
+}
+
+# Every speaker in voices-v1.0.bin.
+KOKORO_STYLES = (
+    "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole", "af_nova",
+    "af_river", "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam",
+    "am_michael", "am_onyx", "am_puck", "am_santa",
+    "bf_alice", "bf_emma", "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+    "ef_dora", "em_alex", "em_santa", "ff_siwis", "hf_alpha", "hf_beta", "hm_omega", "hm_psi",
+    "if_sara", "im_nicola", "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo",
+    "pf_dora", "pm_alex", "pm_santa", "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+    "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang",
+)
 
 
-def _kokoro(style: str, desc: str) -> VoiceSpec:
+def _kokoro(style: str) -> VoiceSpec:
+    locale, language, _ = KOKORO_LANGUAGES[style[0]]
+    desc = "female" if style[1] == "f" else "male"
+    if style[0] in "jz":
+        desc += " (experimental: espeak reads kana and hanzi poorly)"
     return VoiceSpec(
-        name=f"kokoro-{style}", backend="kokoro", sample_rate=24000,
-        license="Apache-2.0", description=desc,
+        name=f"kokoro-{style}", backend="kokoro", license="Apache-2.0", description=desc,
+        language=locale, language_name=language, size_bytes=_KOKORO_SIZE,
         # Canonical files for kokoro-onnx live on GitHub Releases, not HF.
         # (onnx-community/Kokoro-82M-v1.0-ONNX on HF is an incompatible export.)
         source="http",
@@ -88,19 +132,44 @@ def _kokoro(style: str, desc: str) -> VoiceSpec:
 VOICES: dict[str, VoiceSpec] = {
     v.name: v
     for v in (
-        _piper("piper-en-lessac-medium", "en/en_US", "lessac", "medium", "US English, neutral — fast default"),
-        _piper("piper-en-amy-low", "en/en_US", "amy", "low", "US English, smallest/fastest"),
-        _piper("piper-en-gb-alan-medium", "en/en_GB", "alan", "medium", "British English", lang_code="en_GB"),
-        _kokoro("af_sarah", "US English female, higher quality"),
-        _kokoro("am_adam", "US English male, higher quality"),
-        _kokoro("bf_emma", "British English female, higher quality"),
+        *(_kokoro(s) for s in KOKORO_STYLES),
+        *_piper_voices(),
         VoiceSpec(
-            name="system", backend="system", sample_rate=0, license="n/a",
+            name="system", backend="system", license="n/a",
             description="OS text-to-speech (espeak-ng / say / SAPI)", source="none",
         ),
     )
 }
 
+DEFAULT_VOICE = "kokoro-bf_emma"
+
+# Lower-cased canonical and bare names ("kokoro-af_sarah", "af_sarah",
+# "piper-en_us-lessac-medium", "en_us-lessac-medium") -> canonical name.
+_LOOKUP: dict[str, str] = {}
+for _name in VOICES:
+    _LOOKUP[_name.lower()] = _name
+    _LOOKUP[_name.split("-", 1)[-1].lower()] = _name
+
+
+def resolve_voice(name: str | None) -> tuple[str, VoiceSpec] | None:
+    """Look up a voice by canonical or bare name, in any case, with an
+    optional ``#N`` speaker suffix for multi-speaker Piper models.
+
+    Returns ``(canonical_name, spec)``, the spec's ``style`` carrying the
+    speaker, or None if ``name`` is empty or matches nothing.
+    """
+    if not name or not name.strip():
+        return None
+    base, _, speaker = name.strip().partition("#")
+    canonical = _LOOKUP.get(base.lower())
+    if canonical is None:
+        return None
+    spec = VOICES[canonical]
+    if not speaker:
+        return canonical, spec
+    if spec.speakers < 2 or not speaker.isdigit() or int(speaker) >= spec.speakers:
+        return None
+    return f"{canonical}#{int(speaker)}", replace(spec, style=str(int(speaker)))
 
 # ── Paths ───────────────────────────────────────────────────────────
 
@@ -123,12 +192,10 @@ def voice_dir(spec: VoiceSpec) -> Path:
 
 
 def get_voice(name: str) -> VoiceSpec:
-    try:
-        return VOICES[name]
-    except KeyError:
-        raise VoiceNotFoundError(
-            f"Unknown voice {name!r}. Known: {', '.join(sorted(VOICES))}"
-        ) from None
+    found = resolve_voice(name)
+    if found is None:
+        raise VoiceNotFoundError(f"Unknown voice {name!r}; see `vocal models list`")
+    return found[1]
 
 
 def is_downloaded(spec: VoiceSpec) -> bool:
@@ -141,8 +208,8 @@ def is_downloaded(spec: VoiceSpec) -> bool:
 # ── Download ────────────────────────────────────────────────────────
 
 
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
+def _digest(path: Path, algo: str) -> str:
+    h = hashlib.new(algo, usedforsecurity=False)
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
@@ -150,11 +217,14 @@ def _sha256(path: Path) -> str:
 
 
 def _verify(spec: VoiceSpec, path: Path) -> None:
-    expected = spec.sha256.get(path.name)
-    if not expected:
-        logger.debug("No sha256 pin for %s; skipping verification", path.name)
+    if path.name in spec.sha256:
+        algo, expected = "sha256", spec.sha256[path.name]
+    elif path.name in spec.md5:
+        algo, expected = "md5", spec.md5[path.name]
+    else:
+        logger.debug("No checksum pin for %s; skipping verification", path.name)
         return
-    actual = _sha256(path)
+    actual = _digest(path, algo)
     if actual != expected:
         path.unlink(missing_ok=True)
         raise VoiceNotFoundError(f"Checksum mismatch for {path.name}: {actual} != {expected}")

@@ -19,7 +19,7 @@ class StubController:
         self.said: list[tuple[str, bool, str | None]] = []
         self.stops = 0
         self.is_speaking = False
-        self.voice = "piper-en-lessac-medium"
+        self.voice = "piper-en_US-lessac-medium"
         self.backend_name = "piper"
 
     @property

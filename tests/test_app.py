@@ -265,9 +265,9 @@ def test_apply_duck_toggle_syncs_ducker() -> None:
 
 def test_set_voice_persists(tmp_path: Path) -> None:
     app = _app()
-    app.set_voice("piper-en-amy-low")
-    assert app.config.output.speech.voice == "piper-en-amy-low"
-    assert 'voice = "piper-en-amy-low"' in (tmp_path / "config.toml").read_text()
+    app.set_voice("piper-en_US-amy-low")
+    assert app.config.output.speech.voice == "piper-en_US-amy-low"
+    assert 'voice = "piper-en_US-amy-low"' in (tmp_path / "config.toml").read_text()
 
 
 # ── generation guard ──

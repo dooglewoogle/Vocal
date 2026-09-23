@@ -38,4 +38,4 @@ vocal = "vocal.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-vocal = ["assets/*.png"]
+vocal = ["assets/*.png", "output/*.json"]
