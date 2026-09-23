@@ -33,7 +33,7 @@ That is the whole install. The script installs the system packages (asks for `su
 
 The script first lists exactly what it will do and asks for confirmation, then prints every command as it runs. Options: `--no-autostart` (don't start at login), `--no-system` (you already installed the system packages, or have no `sudo`), `--dev` (editable install for hacking on Vocal), `--yes` (skip the confirmation), `--agents` / `--no-agents` (see below). Linux with `apt` and macOS with Homebrew are supported; other distros get a list of packages to install by hand. If the default `python3` is too new (3.14 on current macOS), the script picks an installed 3.10–3.13 interpreter, or on a Mac installs Homebrew's `python@3.13` alongside PortAudio.
 
-First run downloads the Whisper model (~500 MB for `small.en`) and, on the first `say`, the default Piper voice (~65 MB). Subsequent runs start in seconds.
+First run downloads the Whisper model (~500 MB for `small.en`) and, on the first `say`, the Kokoro model behind the default voice `kokoro-bf_emma` (~354 MB). Subsequent runs start in seconds.
 
 ### AI coding agents
 
@@ -43,6 +43,8 @@ If Claude Code, OpenAI Codex CLI or Gemini CLI is installed (their `~/.claude`, 
 - appends a marked block (`<!-- vocal:begin -->` … `<!-- vocal:end -->`) to the agent's global instructions file (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`) telling the model to wrap a one-sentence spoken summary in `<say>…</say>` at the start and end of each reply.
 
 The hook posts every completed `<say>` span to the running daemon's `/say` route from a detached process, so the agent never waits on it; spans inside code blocks are ignored, and nothing happens when the daemon is not running. Start a new agent session after installing.
+
+A span can pick its voice with `<say voice="am_adam">…</say>` (any name `vocal models list` shows; an unknown one speaks in the default voice). The installed instructions don't mention it, so agents keep to the default unless your own instructions ask for a voice, e.g. one per agent.
 
 ```bash
 vocal install-agents               # all detected agents
@@ -107,7 +109,7 @@ Tray icon: green when listening, grey when paused, amber when loading, transcrib
 |-----|--------------|
 | **Status** | Current state (Loading / Listening / Recording / Transcribing / Paused, plus Speaking), a log of recent transcriptions, Pause/Resume and Stop speaking |
 | **Dictation** | Whisper model grid (cached models marked, pick the current one), then Settings (mode, hotkey, sentence silence, recording ducking) and a collapsed **Advanced** block (model tuning, microphone, text insertion, post-processing, voice detection) |
-| **Speech** | Enable speech + host/port on the top row, the voice grid (download, remove, test, pick the current one), then Settings (speed, volume, speaker, speaking ducking) and a collapsed **Advanced** block (duck amount, pause-while-speaking, manual model path, log level) |
+| **Speech** | Enable speech + host/port on the top row, the voice tree grouped by engine and language with a filter box (download, remove, test, set the default), then Settings (speed, volume, speaker, speaking ducking) and a collapsed **Advanced** block (duck amount, pause-while-speaking, manual model path, log level) |
 | **Phrasebook** | Edit mishearing → correction rules and whether they seed recognition / correct output; saving applies them without a model reload |
 
 **Save & Apply** on a tab writes `config.toml` and applies the change live: speech settings take effect immediately, dictation settings restart the dictation engine (a few seconds while the Whisper model reloads).
@@ -177,33 +179,36 @@ The Phrasebook tab in the window edits the same file and applies changes to the 
 ### Voices
 
 ```bash
-vocal models list                          # what's available / downloaded
-vocal models download piper-en-lessac-medium
-vocal models remove piper-en-lessac-medium
+vocal models list                     # every voice, grouped by engine and language
+vocal models list en_GB               # only voices whose name / language / description contains this
+vocal models download piper-en_US-lessac-medium
+vocal models remove piper-en_US-lessac-medium
 ```
 
-| Voice | Backend | Size | Notes |
-|-------|---------|------|-------|
-| `piper-en-lessac-medium` | Piper | 65 MB | **Default.** Lowest latency, good quality |
-| `piper-en-amy-low` | Piper | 30 MB | Smallest/fastest |
-| `piper-en-gb-alan-medium` | Piper | 65 MB | British English |
-| `kokoro-af_sarah` / `am_adam` / `bf_emma` | Kokoro | 330 MB (shared) | Noticeably more natural, ~0.5–1 s to first audio on CPU |
-| `system` | OS | — | espeak-ng / macOS `say` / Windows SAPI. No download; robotic |
+Every upstream voice is listed: the 54 [Kokoro](https://github.com/thewh1teagle/kokoro-onnx) speakers (US and British English, Spanish, French, Hindi, Italian, Brazilian Portuguese, Japanese, Mandarin) and the 177 [Piper](https://huggingface.co/rhasspy/piper-voices) voices in 53 languages, plus `system`.
 
-Models are stored under `~/.cache/vocal/models/<backend>/` (macOS `~/Library/Caches/vocal/models`, or `$VOCAL_MODELS_DIR`). They download automatically the first time a voice is used; set `auto_download = false` to require the explicit command.
+| Voices | Size | Notes |
+|--------|------|-------|
+| `kokoro-<speaker>`, e.g. `kokoro-bf_emma` (**default**), `kokoro-af_sarah` | 354 MB, shared by all | Noticeably more natural, ~0.5–1 s to first audio on CPU. First letter = language, second = gender. Japanese and Mandarin go through espeak and are rough |
+| `piper-<lang>-<name>-<quality>`, e.g. `piper-en_US-lessac-medium` | 20–140 MB each | Lowest latency. Multi-speaker models (e.g. `piper-en_GB-vctk-medium`, 109 speakers) take a speaker as `#N`: `piper-en_GB-vctk-medium#12` |
+| `system` | — | espeak-ng / macOS `say` / Windows SAPI. No download; robotic |
 
-Piper voices come from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) on Hugging Face. Kokoro files (`kokoro-v1.0.onnx` + `voices-v1.0.bin`) come from the [kokoro-onnx GitHub release](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.0) — the Hugging Face `onnx-community` export is a different, incompatible format.
+Names are case-insensitive and the engine prefix is optional: `af_sarah` and `en_us-lessac-medium` work too. The **default voice** (Speech tab, or `output.speech.voice`) speaks whenever a request names no voice or one Vocal doesn't know; if the configured default itself is unknown, `kokoro-bf_emma` is used. Switching between Kokoro speakers, or Piper speakers of one model, doesn't reload anything; Vocal keeps one Kokoro and one Piper model in memory.
 
-**Manual / offline install:** put the files anywhere and point `output.speech.model_path` at them — for Piper the `.onnx` file (with its `.onnx.json` alongside), for Kokoro the directory holding the `.onnx` and `voices*.bin`. `voice` selects the backend (and the Kokoro speaker); the registry and downloader are bypassed.
+Models are stored under `~/.cache/vocal/models/<backend>/` (macOS `~/Library/Caches/vocal/models`, or `$VOCAL_MODELS_DIR`). They download automatically the first time a voice is used (the request waits for it); with `auto_download = false` a voice that isn't downloaded falls back to the default. Every download is checked against a pinned checksum.
+
+Piper voices come from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) on Hugging Face; the catalogue is a snapshot in `src/vocal/output/piper_voices.json`, refreshed with `scripts/gen_piper_voices.py`. Kokoro files (`kokoro-v1.0.onnx` + `voices-v1.0.bin`) come from the [kokoro-onnx GitHub release](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.0) — the Hugging Face `onnx-community` export is a different, incompatible format.
+
+**Manual / offline install:** put the files anywhere and point `output.speech.model_path` at them — for Piper the `.onnx` file (with its `.onnx.json` alongside), for Kokoro the directory holding the `.onnx` and `voices*.bin`. `voice` selects the backend (and the Kokoro speaker); the registry and downloader are bypassed. `model_path` applies only to the default voice; voices named in requests still use the registry.
 
 ### Speaking
 
 ```bash
 vocal say "Hello there."             # via the daemon; falls back to in-process if none
 vocal say -i "Stop everything and say this."   # interrupt: flush queue, speak now
-vocal say --voice kokoro-af_sarah "A different voice, just this once."
+vocal say --voice af_sarah "A different voice, just this once."   # unknown name: default voice + a warning
 vocal stop                           # halt and clear the queue
-vocal status                         # {"speaking": ..., "queue": ..., "voice": ..., "backend": ...}
+vocal status                         # {"speaking": ..., "queue": ..., "default_voice": ..., "backend": ...}
 ```
 
 Text is split at sentence boundaries; the next sentence, and any queued request, is synthesized while the current one plays, so long passages start after the first sentence and there is no synthesis gap between sentences. Requests queue FIFO unless `--interrupt` is given.
@@ -220,7 +225,7 @@ While the daemon runs it listens on `127.0.0.1:47821` (or an ephemeral port if t
 ```bash
 curl -s -X POST http://127.0.0.1:47821/say \
      -H 'Content-Type: application/json' \
-     -d '{"text": "Deploy complete.", "interrupt": false}'
+     -d '{"text": "Deploy complete.", "voice": "bf_emma"}'
 
 # or read the port from the runtime file
 PORT=$(jq -r .port "$XDG_RUNTIME_DIR/vocal/server.json")
@@ -228,9 +233,11 @@ PORT=$(jq -r .port "$XDG_RUNTIME_DIR/vocal/server.json")
 
 | Route | Body | Response |
 |-------|------|----------|
-| `POST /say` | `{"text": str, "interrupt"?: bool, "voice"?: str}` | `202 {"ok": true, "queue": n}` |
+| `POST /say` | `{"text": str, "interrupt"?: bool, "voice"?: str}` | `202 {"ok": true, "queue": n, "voice": str, "fallback": str \| null}` |
 | `POST /stop` | — | `200 {"ok": true}` |
-| `GET /status` | — | `{"speaking", "queue", "voice", "backend"}` |
+| `GET /status` | — | `{"speaking", "queue", "default_voice", "backend"}` |
+
+`voice` in the `/say` reply is the voice that will speak. An unknown `voice` is not an error: the reply names the default voice and `fallback` says why (`"unknown voice 'x'"`). A voice that is known but fails to load at synthesis time (download failed, `auto_download` off) also falls back to the default, and that is only logged.
 | `GET /health` | — | `{"ok": true}` |
 
 Requests carrying an `Origin` header get `403`: browsers add one to every cross-origin request, so a web page can't drive your speaker, while curl and scripts (which send none) are unaffected. Disable the server with `--no-server` or `[output.server] enabled = false`.
@@ -249,10 +256,10 @@ Flags override the configuration file for that run.
 
 ```
 vocal [flags]                       run Vocal: window + daemon (default when no command given)
-vocal say [-i] [--voice V] [TEXT…]  speak TEXT, or stdin if omitted / '-'
+vocal say [-i] [--voice V] [TEXT…]  speak TEXT, or stdin if omitted / '-'; --voice for this utterance only
 vocal stop
 vocal status
-vocal models [list | download NAME | remove NAME]
+vocal models [list [FILTER] | download NAME | remove NAME]
 vocal install-desktop [--autostart | --no-autostart | --uninstall]
 vocal install-agents [claude|codex|gemini …] [--uninstall | --list]
 
@@ -328,7 +335,7 @@ remove_hallucinations = true
 
 # ── Output: speech ────────────────────────────────────────────
 [output.speech]
-voice = "piper-en-lessac-medium"   # also decides the backend (piper / kokoro / system)
+voice = "kokoro-bf_emma"   # default voice; also decides the backend (piper / kokoro / system)
 # model_path = "~/voices/en_US-lessac-medium.onnx"   # manual install; bypasses download
 auto_download = true
 speed = 1.0
