@@ -37,3 +37,9 @@ Patterns from user corrections. Read at session start.
 **Mistake:** declared `requires-python = ">=3.10"` with no ceiling while depending on kokoro-onnx, which caps at `<3.14`. The installer built a 3.14 venv and pip failed after the venv existed, leaving a broken install behind.
 **Rule:** when adding a dependency, read its `requires_python` on PyPI (`curl -s https://pypi.org/pypi/<pkg>/json | jq .info.requires_python`) and mirror the tightest ceiling in pyproject. The installer probes interpreter versions before creating a venv and never builds one on an unsupported Python.
 **Trigger:** any edit to the `dependencies` list, or a new default platform whose system Python may be newer than ours.
+
+## 2026-09-24 — per-request voices plan
+
+**Mistake:** planned alias support for the three old Piper voice names so stale configs would keep resolving, without being asked for backward compatibility.
+**Rule:** Vocal is pre-1.0 with one real user; when renaming identifiers, rename cleanly. Handle stale values with the feature's own fallback (warn + default), not with compatibility shims. Offer a shim only if the user asks.
+**Trigger:** renaming any config value, voice name, route or CLI flag.
