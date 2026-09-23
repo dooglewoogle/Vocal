@@ -11,8 +11,9 @@ CLI and Gemini CLI. The agent pipes its event JSON to stdin; we dispatch on
 * ``Stop`` (Codex CLI) carries ``last_assistant_message``.
 * ``AfterAgent`` (Gemini CLI) carries ``prompt_response``.
 
-Each utterance is handed to a detached child (``--speak TEXT``) that POSTs it to
-the daemon's ``/say`` route, so the agent is never blocked on the network.
+A span may pick a voice: ``<say voice="bf_emma">...</say>``; an unknown name is
+spoken in the daemon's default voice. Each utterance is handed to a detached
+child (``--speak TEXT [--voice NAME]``) that POSTs it to the daemon's ``/say`` route, so the agent is never blocked on the network.
 Everything is fire and forget: every failure path exits 0 with empty stdout
 (Gemini rejects non-JSON stdout, Claude would show it), and nothing here
 imports the speech stack, so the hook costs one bare interpreter start.
@@ -32,7 +33,7 @@ from pathlib import Path
 
 from vocal.output.runtime import read_runtime_info
 
-SAY_RE = re.compile(r"<say>(.*?)</say>", re.DOTALL | re.IGNORECASE)
+SAY_RE = re.compile(r"""<say(?:\s+voice\s*=\s*["']([^"'<>]*)["'])?\s*>(.*?)</say>""", re.DOTALL | re.IGNORECASE)
 FENCE_RE = re.compile(r"```.*?(```|\Z)", re.DOTALL)  # unclosed fence masks to end
 INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 STALE_SECONDS = 3600
@@ -45,20 +46,25 @@ FINAL_TEXT_FIELD = {
 }
 
 
-def spans(text: str) -> list[str]:
-    """Completed <say> spans outside code, whitespace-normalised."""
+def spans(text: str) -> list[tuple[str | None, str]]:
+    """Completed <say> spans outside code as ``(voice or None, text)``, text
+    whitespace-normalised."""
     text = FENCE_RE.sub("", text)
     text = INLINE_CODE_RE.sub("", text)
-    return [" ".join(s.split()).replace(":", ",") for s in SAY_RE.findall(text) if s.strip()]
+    return [(voice.strip() or None, " ".join(s.split()).replace(":", ","))
+            for voice, s in SAY_RE.findall(text) if s.strip()]
 
 
-def post(text: str) -> bool:
+def post(text: str, voice: str | None = None) -> bool:
     """Synchronous POST to the daemon. Runs in the detached child only."""
     info = read_runtime_info()
     if info is None:
         return False
     url = f"http://{info.get('host', '127.0.0.1')}:{info['port']}/say"
-    body = json.dumps({"text": text, "interrupt": False}).encode()
+    payload: dict = {"text": text, "interrupt": False}
+    if voice:
+        payload["voice"] = voice
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Content-Type": "application/json"})
     try:
@@ -68,10 +74,10 @@ def post(text: str) -> bool:
         return False
 
 
-def speak(text: str) -> None:
+def speak(text: str, voice: str | None = None) -> None:
     """Fire and forget: hand ``text`` to a detached copy of this module."""
     subprocess.Popen(
-        [sys.executable, "-m", "vocal.hooks.say_hook", "--speak", text],
+        [sys.executable, "-m", "vocal.hooks.say_hook", "--speak", text, *(["--voice", voice] if voice else [])],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
@@ -106,8 +112,8 @@ def handle_message_display(payload: dict) -> None:
 
     st["text"] += payload.get("delta") or ""
     found = spans(st["text"])
-    for utterance in found[st["spoken"]:]:
-        speak(utterance)
+    for voice, utterance in found[st["spoken"]:]:
+        speak(utterance, voice)
     st["spoken"] = len(found)
 
     if payload.get("final"):
@@ -124,14 +130,14 @@ def handle(payload: dict) -> None:
         return
     field = FINAL_TEXT_FIELD.get(event)
     if field:
-        for utterance in spans(str(payload.get(field) or "")):
-            speak(utterance)
+        for voice, utterance in spans(str(payload.get(field) or "")):
+            speak(utterance, voice)
 
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) == 2 and argv[0] == "--speak":
-        post(argv[1])
+    if argv[:1] == ["--speak"] and len(argv) in (2, 4):
+        post(argv[1], argv[3] if len(argv) == 4 and argv[2] == "--voice" else None)
         return
     payload = json.loads(sys.stdin.read() or "{}")
     if isinstance(payload, dict):

@@ -16,9 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def spoken(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
-    out: list[str] = []
-    monkeypatch.setattr(say_hook, "speak", out.append)
+def spoken(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list:
+    """Spoken texts; a span with a voice is recorded as ``(voice, text)``."""
+    out: list = []
+    monkeypatch.setattr(say_hook, "speak", lambda text, voice=None: out.append((voice, text) if voice else text))
     monkeypatch.setattr(say_hook.tempfile, "gettempdir", lambda: str(tmp_path))
     return out
 
@@ -43,7 +44,27 @@ def test_hook_module_does_not_import_speech_stack() -> None:
     ("<say>first</say> text <say>second</say>", ["first", "second"]),
 ])
 def test_spans(text: str, expected: list[str]) -> None:
+    assert say_hook.spans(text) == [(None, t) for t in expected]
+
+
+@pytest.mark.parametrize("text, expected", [
+    ('<say voice="bf_emma">Hi.</say>', [("bf_emma", "Hi.")]),
+    ("<SAY VOICE='piper-en_GB-vctk-medium#12' >Hi.</SAY>", [("piper-en_GB-vctk-medium#12", "Hi.")]),
+    ('<say voice="">Hi.</say>', [(None, "Hi.")]),
+    ('<say voice="a">one</say> <say>two</say>', [("a", "one"), (None, "two")]),
+    ('```\n<say voice="a">fenced</say>\n```', []),
+    ('<say voice=bare>unquoted is not a say tag</say>', []),
+])
+def test_spans_with_voice(text: str, expected: list) -> None:
     assert say_hook.spans(text) == expected
+
+
+def test_voice_attribute_reaches_speak(spoken: list) -> None:
+    say_hook.handle({"hook_event_name": "Stop", "last_assistant_message": '<say voice="am_adam">Yo.</say>'})
+    base = {"hook_event_name": "MessageDisplay", "session_id": "s1", "message_id": "m2"}
+    say_hook.handle({**base, "delta": '<say voice="bf_'})
+    say_hook.handle({**base, "delta": 'emma">Split tag.</say>', "final": True})
+    assert spoken == [("am_adam", "Yo."), ("bf_emma", "Split tag.")]
 
 
 def test_codex_stop_speaks_last_message(spoken: list[str]) -> None:
@@ -114,10 +135,14 @@ def test_speak_child_posts_to_daemon(tmp_path: Path) -> None:
     rt.write_text(json.dumps({"host": "127.0.0.1", "port": srv.server_address[1]}))
     try:
         r = _run("", "--speak", "Hello daemon", env={"VOCAL_RUNTIME_FILE": str(rt)})
+        r2 = _run("", "--speak", "Hi Emma", "--voice", "bf_emma", env={"VOCAL_RUNTIME_FILE": str(rt)})
     finally:
         srv.shutdown()
-    assert r.returncode == 0 and r.stdout == ""
-    assert got == [{"path": "/say", "body": {"text": "Hello daemon", "interrupt": False}}]
+    assert r.returncode == r2.returncode == 0 and r.stdout == r2.stdout == ""
+    assert got == [
+        {"path": "/say", "body": {"text": "Hello daemon", "interrupt": False}},
+        {"path": "/say", "body": {"text": "Hi Emma", "interrupt": False, "voice": "bf_emma"}},
+    ]
 
 
 def test_speak_child_without_daemon_is_silent(tmp_path: Path) -> None:
