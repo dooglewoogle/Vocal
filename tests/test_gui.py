@@ -144,10 +144,10 @@ def test_settings_round_trip_and_parse_errors(window) -> None:
         s.collect()
 
 
-def test_grids_mark_current_and_drive_apply(window) -> None:
+def test_grids_mark_default_and_drive_apply(window) -> None:
     w, app = window
     assert w.dictation._models.set(app.config.input.model.size, "current") == "✓"
-    assert w.speech._voices.set(app.config.output.speech.voice, "current") == "✓"
+    assert w.speech._voices.set(app.config.output.speech.voice, "default") == "✓"
     w.speech._voices.selection_set("piper-en_US-amy-low")
     w.speech._use_voice()
     import time
@@ -156,6 +156,32 @@ def test_grids_mark_current_and_drive_apply(window) -> None:
         w._pump()
         time.sleep(0.01)
     assert ("voice", "piper-en_US-amy-low") in app.calls
+
+
+def test_voice_tree_groups_and_filters(window) -> None:
+    w, app = window
+    tab, tree = w.speech, w.speech._voices
+    assert tree.parent("kokoro-bf_emma") == "grp:kokoro:English (Great Britain)"
+    assert tree.parent("grp:kokoro:English (Great Britain)") == "grp:kokoro"
+    assert tree.parent("system") == "grp:system"
+    assert tree.item("grp:piper:English (United States)", "open")
+    assert not tree.item("grp:piper:German (Germany)", "open")
+    tree.item("grp:piper:English (United States)", open=False)  # the user's own choice
+
+    tab._filter.set("VCTK")
+    assert tree.get_children() == ("grp:piper",)
+    assert tree.get_children("grp:piper:English (Great Britain)") == ("piper-en_GB-vctk-medium",)
+    assert tree.item("grp:piper:English (Great Britain)", "open")
+
+    tab._filter.set("")
+    assert tree.exists("kokoro-af_sarah")
+    assert not tree.item("grp:piper:English (United States)", "open")  # restored
+
+    # group rows are not voices
+    tree.selection_set("grp:kokoro")
+    assert tab._selected() is None
+    tab._use_voice()
+    assert not any(isinstance(c, tuple) and c[0] == "voice" for c in app.calls)
 
 
 def test_close_hides_with_tray_and_quits_without(window) -> None:

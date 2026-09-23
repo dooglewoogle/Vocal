@@ -21,6 +21,7 @@ from vocal.output.models import (
     DEFAULT_VOICE,
     VoiceNotFoundError,
     VoiceSpec,
+    effective_default,
     get_voice,
     resolve_model_path,
     resolve_voice,
@@ -141,8 +142,7 @@ class SpeechController:
     @property
     def voice(self) -> str:
         """The default voice: the configured one if it resolves, else ``DEFAULT_VOICE``."""
-        found = resolve_voice(self._config.voice)
-        return found[0] if found else DEFAULT_VOICE
+        return effective_default(self._config.voice)
 
     @property
     def backend_name(self) -> str:

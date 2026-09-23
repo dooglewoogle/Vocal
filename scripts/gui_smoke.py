@@ -172,7 +172,13 @@ def driver(window) -> None:
         time.sleep(1.5)
         log(f"speech settings applied: speed={app.config.output.speech.speed} disk={load_config(CONFIG_PATH).output.speech.speed} "
             f"engines built={len([t for t in threading.enumerate() if t.name == 'engine'])}")
-        ui(window, lambda: window.speech._voices.selection_set("piper-en_US-lessac-medium"))
+        ui(window, lambda: window.speech._filter.set("britain"))
+        log(f"voice filter 'britain': {ui(window, lambda: window.speech._voices.get_children())}")
+        shot("3a-speech-filtered")
+        ui(window, lambda: window.speech._filter.set(""))
+        # A Kokoro voice other than the default: exercises the no-reload speaker switch.
+        ui(window, lambda: window.speech._voices.selection_set("kokoro-af_sarah"))
+        ui(window, lambda: window.speech._voices.see("kokoro-af_sarah"))
         shot("3-speech")
         ui(window, lambda: window.speech._test())
         time.sleep(3.5)

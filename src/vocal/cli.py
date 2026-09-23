@@ -323,24 +323,23 @@ def _cmd_status(_args: argparse.Namespace) -> int:
 
 def _cmd_models(args: argparse.Namespace) -> int:
     from vocal.output.models import (
-        DEFAULT_VOICE,
         VOICES,
         VoiceNotFoundError,
         download_voice,
+        effective_default,
+        get_voice,
         human_size,
         is_downloaded,
         matches,
         models_dir,
         remove_voice,
-        resolve_voice,
     )
 
     action = args.models_command
     try:
         if action == "list":
             config = _load_config_or_exit(args)
-            found = resolve_voice(config.output.speech.voice)
-            default = found[1].name if found else DEFAULT_VOICE
+            default = get_voice(effective_default(config.output.speech.voice)).name  # drops a #N speaker
             shown = [s for s in VOICES.values() if matches(s, getattr(args, "filter", ""))]
             if not shown:
                 print(f"No voice matches {args.filter!r}.", file=sys.stderr)

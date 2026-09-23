@@ -39,50 +39,99 @@ class SpeechTab(ttk.Frame):
             form.add_field(spec, widget, var)
 
         box = section(parent, "Voices")
-        cols = ("downloaded", "current", "description")
-        self._voices = ttk.Treeview(box, columns=cols, show="tree headings", height=7, selectmode="browse")
+        bar = ttk.Frame(box)
+        bar.pack(fill="x", pady=(0, 4))
+        self._filter = tk.StringVar()
+        ttk.Label(bar, text="Filter").pack(side="left")
+        tip(ttk.Entry(bar, textvariable=self._filter, width=28),
+            "Show only voices whose name, language or description contains this text, "
+            "e.g. \"britain\", \"en_GB\", \"female\" or \"speakers\".").pack(side="left", padx=(6, 2))
+        ttk.Button(bar, text="✕", width=2, command=lambda: self._filter.set("")).pack(side="left")
+        self._filter.trace_add("write", lambda *_: self.refresh())
+
+        cols = ("downloaded", "size", "default", "description")
+        grid = ttk.Frame(box)
+        grid.pack(fill="x")
+        self._voices = ttk.Treeview(grid, columns=cols, show="tree headings", height=14, selectmode="browse")
+        scroll = ttk.Scrollbar(grid, orient="vertical", command=self._voices.yview)
+        self._voices.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
         self._voices.heading("#0", text="Voice")
-        self._voices.column("#0", width=210, stretch=False)
-        for c, w in zip(cols, (90, 70, 370)):
+        self._voices.column("#0", width=300, stretch=False)
+        for c, w in zip(cols, (105, 70, 70, 300)):
             self._voices.heading(c, text=c.capitalize())
-            self._voices.column(c, width=w, anchor="center" if c in ("downloaded", "current") else "w",
+            self._voices.column(c, width=w, anchor="w" if c == "description" else "center",
                                 stretch=(c == "description"))
-        self._voices.pack(fill="x")
+        self._voices.pack(side="left", fill="x", expand=True)
+        self._open: dict[str, bool] = {}  # group expansion chosen while unfiltered
+        self._shown_filter = ""
 
         bar = ttk.Frame(box)
         bar.pack(fill="x", pady=(6, 0))
         self._dl_btn = ttk.Button(bar, text="Download", command=self._download)
         tip(self._dl_btn, "Fetch the selected voice's model files into ~/.cache/vocal/models. Piper voices "
-                          "are ~65 MB; the Kokoro voices share one 330 MB download.").pack(side="left")
+                          "are 20-140 MB each; all Kokoro voices share one 354 MB download.").pack(side="left")
         tip(ttk.Button(bar, text="Remove", command=self._remove),
             "Delete the selected voice's downloaded files. It can be downloaded again later.").pack(side="left", padx=4)
-        tip(ttk.Button(bar, text="Use this voice", command=self._use_voice),
-            "Make the selected voice the default for everything Vocal says, and save that choice.").pack(side="left", padx=4)
+        tip(ttk.Button(bar, text="Set as default", command=self._use_voice),
+            "Make the selected voice the default, and save that choice. The default speaks whenever a "
+            "request names no voice or one Vocal does not know.").pack(side="left", padx=4)
         tip(ttk.Button(bar, text="Test", command=self._test),
             "Speak a sample sentence with the selected voice, interrupting anything currently "
             "playing. Downloads the voice first if needed.").pack(side="left", padx=4)
-        tip(self._voices, "Text-to-speech voices. piper-* are fast and light; kokoro-* sound more natural but "
-                          "take about a second to start on CPU; system uses the OS speech engine. "
-                          "Downloaded = files present. Current = the default voice.")
+        tip(self._voices, "Text-to-speech voices by engine and language. piper-* are fast and light; kokoro-* "
+                          "sound more natural but take about a second to start on CPU; system uses the OS "
+                          "speech engine. Downloaded = files present. Default = the voice used when a request "
+                          "names none, or an unknown one. Multi-speaker Piper voices take #N in requests, "
+                          "e.g. piper-en_GB-vctk-medium#12.")
         self._voice_status = ttk.Label(bar, text="", foreground="#666")
         self._voice_status.pack(side="left", padx=12)
 
     def refresh(self) -> None:
-        from vocal.output.models import VOICES, is_downloaded
+        from vocal.output.models import VOICES, effective_default, get_voice, human_size, is_downloaded, matches
+
+        tree = self._voices
+        needle = self._filter.get().strip()
+        if not self._shown_filter:  # the tree on screen shows the user's own expansion
+            for group in self._groups():
+                self._open[group] = bool(tree.item(group, "open"))
+        self._shown_filter = needle
 
         selected = self._selected()
-        self._voices.delete(*self._voices.get_children())
-        current = self.app.config.output.speech.voice
-        for name, spec in VOICES.items():
-            self._voices.insert("", "end", iid=name, text=name, values=(
-                "✓" if is_downloaded(spec) else "", "✓" if name == current else "", spec.description,
+        tree.delete(*tree.get_children())
+        default = get_voice(effective_default(self.app.config.output.speech.voice))
+        default_group = f"grp:{default.backend}:{default.language_name}"
+        engines = {"kokoro": 0, "piper": 1, "system": 2}
+        for spec in sorted(VOICES.values(), key=lambda v: (engines[v.backend], v.language_name, v.name)):
+            if needle and not matches(spec, needle):
+                continue
+            parent = f"grp:{spec.backend}"
+            if not tree.exists(parent):
+                tree.insert("", "end", iid=parent, text=spec.backend.capitalize(),
+                            open=bool(needle) or self._open.get(parent, True))
+            if spec.language_name:
+                engine, parent = parent, f"{parent}:{spec.language_name}"
+                if not tree.exists(parent):
+                    first_look = spec.language.startswith("en_") or parent == default_group
+                    tree.insert(engine, "end", iid=parent, text=spec.language_name,
+                                open=bool(needle) or self._open.get(parent, first_look))
+            tree.insert(parent, "end", iid=spec.name, text=spec.name, values=(
+                "✓" if is_downloaded(spec) else "", human_size(spec.size_bytes),
+                "✓" if spec.name == default.name else "", spec.description,
             ))
-        if selected and self._voices.exists(selected):
-            self._voices.selection_set(selected)
+        if selected and tree.exists(selected):
+            tree.selection_set(selected)
+            tree.see(selected)
+        if needle and not tree.get_children():
+            self._set_status(f"No voice matches {needle!r}")
+
+    def _groups(self) -> list[str]:
+        tree = self._voices
+        return [g for e in tree.get_children() for g in (e, *tree.get_children(e)) if g.startswith("grp:")]
 
     def _selected(self) -> str | None:
         sel = self._voices.selection()
-        return sel[0] if sel else None
+        return sel[0] if sel and not sel[0].startswith("grp:") else None
 
     def _set_status(self, text: str, error: bool = False) -> None:
         self._voice_status.configure(text=text, foreground="#b00020" if error else "#666")

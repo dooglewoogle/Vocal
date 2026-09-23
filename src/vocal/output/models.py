@@ -191,6 +191,12 @@ def voice_dir(spec: VoiceSpec) -> Path:
     return models_dir() / spec.backend / spec.dir_name
 
 
+def effective_default(configured: str | None) -> str:
+    """The canonical default voice: ``configured`` if it resolves, else ``DEFAULT_VOICE``."""
+    found = resolve_voice(configured)
+    return found[0] if found else DEFAULT_VOICE
+
+
 def matches(spec: VoiceSpec, needle: str) -> bool:
     """Case-insensitive substring match over name, language and description."""
     needle = needle.strip().lower()
