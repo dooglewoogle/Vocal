@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import tkinter as tk
 from tkinter import ttk
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from vocal.gui.settings_form import SettingsForm, dictation_fields, section
@@ -26,6 +27,24 @@ def whisper_model_cached(size: str) -> bool | None:
         return isinstance(try_to_load_from_cache(repo, "model.bin"), str)
     except Exception:
         return None
+
+
+def probe_whisper_cache(sizes: list[str], run_bg: Callable[..., None],
+                        on_done: Callable[[object], None]) -> None:
+    """Find which ``sizes`` are cached, on a worker thread via ``run_bg``.
+
+    The imports happen here, on the caller's (Tk) thread. A first import of
+    faster_whisper on the worker races the engine importing faster_whisper.vad
+    on the main thread during startup: the worker hits the half-initialised
+    module, its failed import drops faster_whisper from sys.modules, and the
+    engine dies with ``KeyError: 'faster_whisper'``.
+    """
+    try:
+        import faster_whisper.utils  # noqa: F401
+        import huggingface_hub  # noqa: F401
+    except ImportError:
+        pass  # whisper_model_cached reports "unknown"
+    run_bg(lambda: {s: whisper_model_cached(s) for s in sizes}, on_done=on_done, name="whisper-cache-probe")
 
 
 def whisper_models() -> list[str]:
@@ -88,9 +107,6 @@ class DictationTab(ttk.Frame):
         if selected and self._models.exists(selected):
             self._models.selection_set(selected)
 
-        def probe() -> dict[str, bool | None]:
-            return {s: whisper_model_cached(s) for s in sizes}
-
         def done(result: object) -> None:
             if not isinstance(result, dict):
                 return
@@ -98,7 +114,7 @@ class DictationTab(ttk.Frame):
                 if self._models.exists(size):
                     self._models.set(size, "cached", "✓" if cached else "")
 
-        self.window.run_bg(probe, on_done=done, name="whisper-cache-probe")
+        probe_whisper_cache(sizes, self.window.run_bg, done)
 
     def _selected(self) -> str | None:
         sel = self._models.selection()
