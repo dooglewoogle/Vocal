@@ -146,3 +146,11 @@ def test_models_list_filters_and_marks_default(tmp_path, monkeypatch: pytest.Mon
     assert "[ ]*piper-en_GB-alan-medium" in out and "[ ] piper-en_GB-alan-low" in out
     assert "kokoro-" not in out  # only the matches are listed
     assert cli._cmd_models(parse_args(["--config", str(cfg), "models", "list", "zzz-no-such-voice"])) == 1
+
+
+def test_permissions_off_macos(monkeypatch, capsys):
+    from vocal import cli
+
+    monkeypatch.setattr(cli.sys, "platform", "linux")
+    assert cli._cmd_permissions(parse_args(["permissions"])) == 0
+    assert "only needed on macOS" in capsys.readouterr().out

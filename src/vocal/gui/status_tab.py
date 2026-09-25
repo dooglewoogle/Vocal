@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 import tkinter as tk
 from tkinter import ttk
@@ -41,6 +42,8 @@ class StatusTab(ttk.Frame):
 
         top = ttk.Frame(self)
         top.pack(fill="x")
+        if sys.platform == "darwin":
+            self._build_permission_banner(before=top)
         self._dot = tk.Canvas(top, width=18, height=18, highlightthickness=0)
         self._dot.pack(side="left", padx=(0, 8))
         self._circle = self._dot.create_oval(2, 2, 16, 16, fill=_COLOUR[self._state], outline="")
@@ -85,6 +88,42 @@ class StatusTab(ttk.Frame):
                 "Write a freedesktop autostart entry (and an app-menu entry with icon) pointing at this "
                 "installation of Vocal, so it launches with your session. Same as `vocal install-desktop --autostart`."
                 ).pack(side="right")
+
+    def _build_permission_banner(self, before: tk.Misc) -> None:
+        """Amber line shown while macOS blocks the hotkey or typing (notify-send is Linux only)."""
+        from vocal import macos_perms
+
+        self._perm_app = macos_perms.responsible_app()
+        self._perm_before = before
+        self._perm_banner = ttk.Frame(self)
+        self._perm_label = ttk.Label(self._perm_banner, text="", foreground="#d59a2b", wraplength=480)
+        self._perm_label.pack(side="left")
+        tip(ttk.Button(self._perm_banner, text="Recheck", command=self._check_permissions),
+            "Check the macOS permissions again.").pack(side="right")
+        tip(ttk.Button(self._perm_banner, text="Fix…", command=self._fix_permissions),
+            "Ask macOS for the missing permissions and open the matching System Settings panes. "
+            "Same as `vocal permissions`.").pack(side="right", padx=6)
+        self._check_permissions()
+
+    def _check_permissions(self) -> None:
+        from vocal import macos_perms
+
+        self._perm_status = macos_perms.status()
+        missing = [name for key, name, _pane, _why in macos_perms.PERMISSIONS if self._perm_status[key] is False]
+        if not missing:
+            self._perm_banner.pack_forget()
+            return
+        self._perm_label.configure(text=(
+            f"Hotkey or typing blocked: allow {self._perm_app} in {' and '.join(missing)}, "
+            f"then quit {self._perm_app} (⌘Q) and reopen it."
+        ))
+        self._perm_banner.pack(fill="x", pady=(0, 8), before=self._perm_before)
+
+    def _fix_permissions(self) -> None:
+        from vocal import macos_perms
+
+        macos_perms.request(self._perm_status)
+        macos_perms.open_settings(self._perm_status)
 
     # ── Updates (UI thread) ──────────────────────────────────────────
 

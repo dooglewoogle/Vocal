@@ -7,6 +7,7 @@
     vocal models list|download|remove
     vocal install-desktop [--autostart | --no-autostart | --uninstall]
     vocal install-agents [claude|codex|gemini ...] [--uninstall | --list]
+    vocal permissions             check macOS privacy permissions, open Settings for missing ones
 """
 
 from __future__ import annotations
@@ -173,6 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
     agx = ag.add_mutually_exclusive_group()
     agx.add_argument("--uninstall", action="store_true", help="Remove the hook and instruction block again")
     agx.add_argument("--list", action="store_true", help="Show which agents are detected and installed")
+
+    sub.add_parser("permissions", help="macOS: check the privacy permissions the hotkey and typing need")
     return parser
 
 
@@ -318,6 +321,28 @@ def _cmd_status(_args: argparse.Namespace) -> int:
         print("No vocal daemon running.", file=sys.stderr)
         return 1
     print(json.dumps(info, indent=2))
+    return 0
+
+
+def _cmd_permissions(_args: argparse.Namespace) -> int:
+    if sys.platform != "darwin":
+        print("Privacy permissions are only needed on macOS.")
+        return 0
+    from vocal import macos_perms
+
+    app = macos_perms.responsible_app()
+    st = macos_perms.status()
+    mark = {True: "✓", False: "✗", None: "?"}
+    print(f"Vocal runs under: {app}   (macOS checks this app, not Python)")
+    for key, name, _pane, why in macos_perms.PERMISSIONS:
+        print(f"  {name:<18} {mark[st[key]]}   {why}")
+    print(f"  {'Microphone':<18} –   macOS asks on the first recording")
+    for line in macos_perms.advice(st, app):
+        print(line)
+    if False in st.values():
+        print("Opening System Settings…")
+        macos_perms.request(st)
+        macos_perms.open_settings(st)
     return 0
 
 
@@ -512,6 +537,8 @@ def main() -> None:
         sys.exit(_cmd_install_desktop(args))
     if args.command == "install-agents":
         sys.exit(_cmd_install_agents(args))
+    if args.command == "permissions":
+        sys.exit(_cmd_permissions(args))
 
     if args.list_devices:
         list_audio_devices()

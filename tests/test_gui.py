@@ -315,3 +315,27 @@ def test_wheel_scrolls_settings_page_from_any_widget_and_spares_comboboxes(windo
     w.root.update()
     assert canvas.yview()[0] == 0.0
     w.root.withdraw()
+
+
+def test_macos_permission_banner(monkeypatch, window) -> None:
+    from vocal import macos_perms
+    from vocal.gui.status_tab import StatusTab
+
+    w, _app = window
+    st = {"input_monitoring": False, "accessibility": True}
+    opened: list = []
+    monkeypatch.setattr("vocal.gui.status_tab.sys.platform", "darwin")
+    monkeypatch.setattr(macos_perms, "status", lambda: dict(st))
+    monkeypatch.setattr(macos_perms, "responsible_app", lambda: "iTerm")
+    monkeypatch.setattr(macos_perms, "request", lambda s: opened.append(("request", s)))
+    monkeypatch.setattr(macos_perms, "open_settings", lambda s: opened.append(("open", s)))
+
+    tab = StatusTab(w.notebook, w)
+    assert tab._perm_banner.winfo_manager() == "pack"
+    assert "allow iTerm in Input Monitoring" in tab._perm_label.cget("text")
+    tab._fix_permissions()
+    assert [kind for kind, _ in opened] == ["request", "open"]
+
+    st["input_monitoring"] = True
+    tab._check_permissions()
+    assert tab._perm_banner.winfo_manager() == ""
