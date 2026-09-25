@@ -143,6 +143,7 @@ class PynputHotkeyListener:
         self._on_stop = on_stop
         self._recording = False
         self._listener = None
+        self._stop = threading.Event()
 
     def _resolve_key(self):
         """Convert key name to pynput Key or KeyCode."""
@@ -163,12 +164,6 @@ class PynputHotkeyListener:
         """Block and listen for hotkey events."""
         from pynput.keyboard import Listener
 
-        if sys.platform == "darwin":
-            logger.info(
-                "macOS: pynput requires Accessibility permissions. "
-                "Grant access in System Settings → Privacy & Security → Accessibility."
-            )
-
         target_key = self._resolve_key()
 
         def on_press(key):
@@ -184,9 +179,23 @@ class PynputHotkeyListener:
         self._listener = Listener(on_press=on_press, on_release=on_release)
         self._listener.start()
         self._listener.join()
+        if self._stop.is_set():
+            return
+        # pynput's thread ends silently when the OS refuses its event tap (macOS
+        # without Input Monitoring). Returning would shut the engine down, so
+        # keep blocking: live dictation still works without the hotkey.
+        if sys.platform == "darwin":
+            from vocal.macos_perms import responsible_app
+
+            logger.error("macOS refused the keyboard listener, so the hotkey is disabled. Allow %s in "
+                         "Input Monitoring and Accessibility, or run 'vocal permissions'.", responsible_app())
+        else:
+            logger.error("The pynput keyboard listener stopped unexpectedly; the hotkey is disabled.")
+        self._stop.wait()
 
     def stop(self) -> None:
         """Signal the listener to stop."""
+        self._stop.set()
         if self._listener is not None:
             self._listener.stop()
 
