@@ -371,6 +371,7 @@ if [ "$DO_AGENTS" = 1 ]; then
     note "Your AI coding agents speak once the Vocal daemon runs; start a new agent session to pick up the hook."
 fi
 if [ "$OS" = Darwin ]; then
-    note "macOS: grant Accessibility permission to your terminal for the global hotkey"
-    note "(System Settings → Privacy & Security → Accessibility)."
+    note "macOS: allow your terminal app in System Settings → Privacy & Security → Input Monitoring"
+    note "(global hotkey) and Accessibility (typing), then quit it with Cmd+Q and reopen it."
+    note "'vocal permissions' shows what is missing and opens the right panes."
 fi

@@ -78,6 +78,22 @@ python3 -m venv --system-site-packages .venv   # needs Python 3.10–3.13; syste
 
 On Linux both backends need the `evdev` C extension (pynput depends on it), which has no prebuilt wheels: `python3-dev` and a compiler must be present when installing `[hotkey]`. Without the extra, Linux has **no global hotkey**: live dictation works, but hotkey mode cannot record and hold-to-mute does nothing. Vocal logs which backend it picked. Text insertion never depends on either; it uses `xdotool`/`xclip` or `wtype`/`wl-clipboard`.
 
+### macOS permissions
+
+macOS grants these to the app you start Vocal from (iTerm, Terminal, VS Code), not to Python. Switch that app on in **System Settings → Privacy & Security**:
+
+| Permission | Needed for |
+|---|---|
+| **Input Monitoring** | the global hotkey |
+| **Accessibility** | typing or pasting the transcript |
+| **Automation → System Events** | typing or pasting (macOS asks on the first insertion) |
+| **Microphone** | recording (macOS asks on the first recording) |
+
+- Quit that app completely (⌘Q) and reopen it afterwards: macOS only applies grants to newly started apps.
+- `vocal permissions` shows what is missing and opens the right panes; the Status tab shows a banner while the hotkey or typing is blocked.
+- Don't try to grant the venv's Python: it is a symlink into Homebrew, whose path changes with every `brew upgrade`.
+- Secure Keyboard Entry (a terminal menu option) and password fields hide keystrokes from the hotkey.
+
 </details>
 
 ## Quick start
@@ -262,6 +278,7 @@ vocal status
 vocal models [list [FILTER] | download NAME | remove NAME]
 vocal install-desktop [--autostart | --no-autostart | --uninstall]
 vocal install-agents [claude|codex|gemini …] [--uninstall | --list]
+vocal permissions                   macOS: check privacy permissions, open Settings for missing ones
 
 General:
   --headless                Tray icon only, no settings window
